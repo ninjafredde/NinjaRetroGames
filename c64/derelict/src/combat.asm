@@ -8,7 +8,7 @@
 // All the crew down = game over.
 
 // ---------------------------------------------------------------- the crew
-.var CREW_NAME = List().add("JOHNSON", "SHIN", "JIMMIE")
+.var CREW_NAME = List().add("JOHN", "SHIN", "JIMMIE")
 .var CREW_HP   = List().add(24, 18, 20)
 .var CREW_ATK  = List().add(6, 8, 5)     // a hit does 1 to this
 .const NCREW = 3

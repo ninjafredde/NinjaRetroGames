@@ -7,7 +7,7 @@ joystick in port 2 or the keyboard.
 - Walking into a wall: a thud, a red border flash, "BONK".
 - Minimap (right): fills in with the cells you have seen; yellow arrow = you, yellow dot = a note.
 - Log (bottom, 3 lines, older ones fade). Stepping on a note cell prints its line.
-- The crew (right): JOHNSON, SHIN, JIMMIE with HP (green, yellow under half, red under a quarter).
+- The crew (right): JOHN, SHIN, JIMMIE with HP (green, yellow under half, red under a quarter).
   Everyone up gets 1 HP back every 6 steps.
 - Fights: now and then something blocks the way (a monster in the view, made of 4 sprites).
   Each crew member picks F)ight, D)efend (half damage) or R)un (half the time the crew gets away).
