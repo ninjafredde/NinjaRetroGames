@@ -4,6 +4,7 @@ rem                       build.bat run    -> build, then play it in SameBoy
 setlocal
 cd /d "%~dp0"
 python tools\gfx.py || exit /b 1
+python tools\music.py || exit /b 1
 if not exist build mkdir build
 tools\rgbds\rgbasm -Wall -I src -o build\main.o src\main.asm || exit /b 1
 tools\rgbds\rgblink -n build\coffee.sym -m build\coffee.map -o build\coffee.gb build\main.o || exit /b 1

@@ -2,6 +2,11 @@
 
 DEF rP1    EQU $FF00   ; joypad
 DEF rIF    EQU $FF0F   ; interrupt flags
+DEF rNR10  EQU $FF10   ; pulse 1 sweep
+DEF rNR30  EQU $FF1A   ; wave on/off
+DEF rNR32  EQU $FF1C   ; wave volume
+DEF rNR50  EQU $FF24   ; master volume
+DEF rNR51  EQU $FF25   ; channel panning
 DEF rNR52  EQU $FF26   ; sound on/off
 DEF rLCDC  EQU $FF40   ; LCD control
 DEF rSTAT  EQU $FF41

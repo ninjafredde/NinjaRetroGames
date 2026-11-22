@@ -101,6 +101,7 @@ def main():
 
     # --- font
     text_map = {}
+    glyph_rows = {}
     consts["FONT_BASE"] = len(tiles)
     for b in blocks(ART / "font.txt"):
         if len(b["head"]) != 2 or b["head"][0] != "glyph":
@@ -109,7 +110,8 @@ def main():
         if len(ch) != 1 or ch in BAD_CHARS or ch in text_map:
             raise ArtError(f"{b['where']}: bad or repeated glyph '{ch}'")
         text_map[ch] = len(tiles)
-        tiles.append(tile_bytes(check_art(b, 8, 8, pad=True), 0, 0))
+        glyph_rows[ch] = check_art(b, 8, 8, pad=True)
+        tiles.append(tile_bytes(glyph_rows[ch], 0, 0))
     for ch in list(text_map):
         if ch.isalpha() and ch.isupper():
             text_map.setdefault(ch.lower(), text_map[ch])
@@ -129,6 +131,35 @@ def main():
         item_names.append(name)
         tiles.append(tile_bytes(check_art(b, 8, 8), 0, 0))
     consts["ITEM_COUNT"] = len(item_names)
+
+    # --- title: "big" lines from art/title.txt, glyphs at 2x with a drop shadow
+    big_lines = []
+    for n, line in enumerate((ART / "title.txt").read_text(encoding="utf-8").splitlines(), 1):
+        if line.startswith("big "):
+            text = line[4:].strip().upper()
+            if not 1 <= len(text) <= 10:
+                raise ArtError(f"title.txt:{n}: a big line holds 1-10 letters")
+            big_lines.append(text)
+    big_tile = {}
+    for ch in sorted(set("".join(big_lines)) - {" "}):
+        if ch not in glyph_rows:
+            raise ArtError(f"title.txt: no glyph for '{ch}'")
+        src = glyph_rows[ch]
+        big = [[0] * 16 for _ in range(16)]
+        for y in range(8):
+            for x in range(8):
+                if src[y][x] == "3":
+                    for dy in (0, 1):
+                        for dx in (0, 1):
+                            big[2 * y + dy][2 * x + dx] = 3
+        for y in range(15):
+            for x in range(15):
+                if big[y][x] == 3 and big[y + 1][x + 1] == 0:
+                    big[y + 1][x + 1] = 2
+        rows = ["".join(".123"[v] for v in r) for r in big]
+        big_tile[ch] = len(tiles)
+        for x0, y0 in ((0, 0), (8, 0), (0, 8), (8, 8)):
+            tiles.append(tile_bytes(rows, x0, y0))
 
     # --- sprites (8x16 mode: start on an even tile; each 16x16 = TL, BL, TR, BR)
     if len(tiles) % 2:
@@ -366,6 +397,20 @@ def main():
     for i, t in enumerate(tiles):
         out.append("    db " + ",".join(f"${x:02X}" for x in t) + f"  ; {i}")
     out += ["AllTilesEnd::", ""]
+    out.append("; title.txt big lines: top row of tiles, then bottom row")
+    for i, text in enumerate(big_lines):
+        top, bottom = [], []
+        for ch in text:
+            if ch == " ":
+                top += [consts["TILE_SPACE"]] * 2
+                bottom += [consts["TILE_SPACE"]] * 2
+            else:
+                t = big_tile[ch]
+                top += [t, t + 1]
+                bottom += [t + 2, t + 3]
+        out += [f"DEF TITLE_BIG{i}_W EQU {len(text) * 2}", f"TitleBig{i}::  ; {text}",
+                "    db " + ",".join(map(str, top)), "    db " + ",".join(map(str, bottom))]
+    out += [f"DEF TITLE_BIG_LINES EQU {len(big_lines)}", ""]
     (GEN / "gfx.asm").write_text("\n".join(out), encoding="utf-8", newline="\n")
 
     # --- write rooms.asm

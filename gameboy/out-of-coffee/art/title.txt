@@ -1,0 +1,4 @@
+; Title screen words drawn twice the size (from font.txt, with a drop shadow).
+; Each "big" line is 2 tiles tall; up to 10 letters. The rest of the title is in main.asm (ShowTitle).
+big OUT OF
+big COFFEE

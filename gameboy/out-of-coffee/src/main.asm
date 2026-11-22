@@ -2,11 +2,14 @@
 ; Step 1: walk John around the ship, room by room.
 ; Step 2: the crew, and text boxes (face someone, press A).
 ; Step 3: story state, items, the machine's rule of three, the end.
+; Step 4: title screen and title tune (lifted from the C64 games).
 
 INCLUDE "hw.inc"
 INCLUDE "gen/gfx.asm"
 INCLUDE "gen/rooms.asm"
 INCLUDE "gen/things.asm"
+INCLUDE "gen/music.asm"
+INCLUDE "music.asm"
 
 ASSERT VAR_COUNT <= 32
 
@@ -118,6 +121,8 @@ Start:
     ld a, %11100000         ; sprites: 1 white, 2 dark, 3 black
     ldh [rOBP0], a
     ldh [rOBP1], a
+    call ShowTitle          ; returns with the LCD off
+
     ld a, HUD_WY            ; HUD = window over the bottom 16 lines
     ldh [hWY], a
     ldh [rWY], a
@@ -1156,6 +1161,147 @@ DrawJohn:
     ret
 
 
+; ---------------------------------------------------------------- title
+DEF TITLE_LCDC EQU %10010111    ; LCD on, $8000 tiles, 8x16 sprites on, BG on, no window
+
+; ShowTitle: LCD is off on entry. Plays the tune until A or Start, then
+; turns the LCD off again for the game.
+ShowTitle:
+    ld hl, $9800
+    ld bc, 32 * 18
+    ld a, TILE_SPACE
+    call Memset
+    ld hl, TitleTop
+    ld de, $9800 + 32 * 1 + (20 - (TitleTopEnd - TitleTop)) / 2
+    ld bc, TitleTopEnd - TitleTop
+    call Memcpy
+    ld hl, TitleBig0
+    ld de, $9800 + 32 * 3 + (20 - TITLE_BIG0_W) / 2
+    ld b, TITLE_BIG0_W
+    call TitleBig
+    ld hl, TitleBig1
+    ld de, $9800 + 32 * 6 + (20 - TITLE_BIG1_W) / 2
+    ld b, TITLE_BIG1_W
+    call TitleBig
+    ld hl, TitleShip        ; Sparrow One on its pad, 5x4 tiles
+    ld de, $9800 + 32 * 9 + 7
+    ld c, 4
+.ship:
+    push bc
+    ld bc, 5
+    call Memcpy
+    ld a, e
+    add 32 - 5
+    ld e, a
+    jr nc, .noCarry
+    inc d
+.noCarry:
+    pop bc
+    dec c
+    jr nz, .ship
+
+    ld hl, TitleSprites     ; John and Jimmie beside the ship
+    ld de, wShadowOAM
+    ld bc, TitleSpritesEnd - TitleSprites
+    call Memcpy
+
+    ld a, HIDE_WY
+    ldh [hWY], a
+    ldh [rWY], a
+    ld a, TITLE_LCDC
+    ldh [rLCDC], a
+    ld a, %00000011
+    ldh [rIE], a
+    xor a
+    ldh [rIF], a
+    ld [wTitleT], a
+    ei
+    call MusicStart
+
+.loop:
+    call WaitFrame
+    call ReadPad
+    call MusicPlay
+    ld hl, wTitleT          ; PRESS START blinks
+    inc [hl]
+    ld a, [hl]
+    and 31
+    jr z, .showPress
+    cp 20
+    jr nz, .keys
+    ld hl, TITLE_PRESS
+    ld b, TitlePressEnd - TitlePress
+    ld a, TILE_SPACE
+    call VramFill
+    jr .keys
+.showPress:
+    ld de, TitlePress
+    ld hl, TITLE_PRESS
+    ld b, TitlePressEnd - TitlePress
+    call VramCopy
+.keys:
+    ldh a, [hNew]
+    and (1 << PADB_START) | (1 << PADB_A)
+    jr z, .loop
+
+    call MusicStop
+.waitVB:
+    ldh a, [rLY]
+    cp 144
+    jr c, .waitVB
+    xor a
+    ldh [rLCDC], a
+    ret
+
+DEF TITLE_PRESS EQU $9800 + 32 * 15 + (20 - 11) / 2
+
+; TitleBig: hl = big line (top row then bottom row), de = map position, b = width
+TitleBig:
+    push bc
+    push de
+    ld c, b
+    ld b, 0
+    push bc
+    call Memcpy
+    pop bc
+    pop de
+    ld a, e
+    add 32
+    ld e, a
+    jr nc, .noCarry
+    inc d
+.noCarry:
+    call Memcpy
+    pop bc
+    ret
+
+; WaitFrame: until the next VBlank interrupt has run
+WaitFrame:
+    halt
+    ldh a, [hVBlank]
+    and a
+    jr z, WaitFrame
+    xor a
+    ldh [hVBlank], a
+    ret
+
+SETCHARMAP text
+TitleTop:   db "WASTE OF SPACE"
+TitleTopEnd:
+TitlePress: db "PRESS START"
+TitlePressEnd:
+SETCHARMAP room
+TitleShip:  db "AEFHI", "JKQRS", "UVWXY", "Zacfg"
+SETCHARMAP main
+
+TitleSprites:   ; y, x, tile, attributes - two 8x16 halves each
+    db 9 * 8 + 16 + 8, 4 * 8 + 8,      SPR_JOHN_SIDE0,     0
+    db 9 * 8 + 16 + 8, 4 * 8 + 8 + 8,  SPR_JOHN_SIDE0 + 2, 0
+    db 9 * 8 + 16 + 8, 13 * 8 + 8,     SPR_JIMMIE,         0
+    db 9 * 8 + 16 + 8, 13 * 8 + 8 + 8, SPR_JIMMIE + 2,     0
+TitleSpritesEnd:
+
+
 ; ---------------------------------------------------------------- effects
 ; Effects: every frame - the white flash of an explosion, and screen shake
 ; (the room shakes sideways; the HUD and text box stay put).
@@ -1220,8 +1366,10 @@ ShowEnd:
     ldh [rBGP], a
     ld a, %10010001         ; LCD on, $8000 tiles, BG only
     ldh [rLCDC], a
+    call MusicStart
 .forever:
-    halt
+    call WaitFrame
+    call MusicPlay
     jr .forever
 
 SETCHARMAP text
@@ -1333,6 +1481,7 @@ wShake:   ds 1
 wShakeAmp: ds 1
 wFlash:   ds 1
 wEnding:  ds 1
+wTitleT:  ds 1
 
 SECTION "HRAM vars", HRAM
 hKeys:   ds 1

@@ -77,6 +77,8 @@ def check(step, **want):
 
 
 pb.tick(200, True)
+hold("start", 2)             # title screen
+pb.tick(20, True)
 ok = True
 exit_room("e")                                        # corridor -> bridge
 talk(76, 63, "up")                                    # Josef

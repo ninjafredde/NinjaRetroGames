@@ -1,0 +1,30 @@
+; The title tune - lifted from the Waste of Space C64 games (C:\dev\c64-crawl\src\music.asm).
+; Same text as on the C64:  a4:4 = note a, octave 4, 4 rows long (no :n = 1 row)
+;   c#5:2 sharps with #  (c c# d d# e f f# g g# a a# b),  r:8 = rest,  @2 = instrument 2,  | = bar line
+; A voice runs until the next @voice line and loops forever.
+
+tempo 7        ; frames per row (the Game Boy runs 60 frames a second)
+
+; instrument N  duty=12|25|50|75  volume=0-15  fade=0-7 (0 = hold, 1 fast .. 7 slow)
+;               arp=major|minor (fast chord)  wobble (duty sweeps, like the SID's pulse sweep)
+;               pluck (wave channel: loud, then fades)
+instrument 0 duty=50 volume=11 wobble       ; lead
+instrument 1 duty=25 volume=6 arp=major     ; chords
+instrument 2 duty=25 volume=6 arp=minor
+instrument 3 pluck                          ; bass
+
+@voice 1       ; pulse 1: the lead
+@0 | a4:4 c5:2 e5:2 d5:4 c5:2 b4:2 | c5:6 a4:2 f4:4 a4:4
+   | g4:4 c5:2 e5:2 g5:4 e5:4 | d5:8 b4:4 g4:4
+   | a4:2 a4:2 c5:2 e5:2 a5:4 g5:2 e5:2 | f5:4 e5:2 c5:2 a4:8
+   | b4:4 d5:4 g5:4 f5:2 d5:2 | e5:6 d5:2 b4:4 g#4:4 |
+
+@voice 2       ; pulse 2: chords
+@2 a4:16 | @1 f4:16 | @1 c4:16 | @1 g4:16
+| @2 a4:16 | @1 f4:16 | @1 g4:16 | @1 e4:16 |
+
+@voice 3       ; wave: the bass, eighth notes
+@3 | a2:2 a2:2 a3:2 a2:2 a2:2 a3:2 a2:2 a3:2 | f2:2 f2:2 f3:2 f2:2 f2:2 f3:2 f2:2 f3:2
+   | c3:2 c3:2 c4:2 c3:2 c3:2 c4:2 c3:2 c4:2 | g2:2 g2:2 g3:2 g2:2 g2:2 g3:2 g2:2 g3:2
+   | a2:2 a2:2 a3:2 a2:2 a2:2 a3:2 a2:2 a3:2 | f2:2 f2:2 f3:2 f2:2 f2:2 f3:2 f2:2 f3:2
+   | g2:2 g2:2 g3:2 g2:2 g2:2 g3:2 g2:2 g3:2 | e2:2 e2:2 e3:2 e2:2 e2:2 e3:2 e2:2 e3:2 |
