@@ -2,7 +2,7 @@
 
 A Waste of Space adventure for the original Game Boy (4 shades), in SM83 assembly.
 
-- `build.bat` builds `build\coffee.gb`; `build.bat run` builds and opens it in SameBoy.
+- Double-click `run.bat` to build and play in SameBoy. `build.bat` only builds `build\coffee.gb`.
 - Tools in `tools\` (not in git): RGBDS 1.0.4 (`tools\rgbds`), SameBoy 1.0.5 (`tools\sameboy`).
 - Art is text: `art\tiles.txt`, `art\sprites.txt`, `art\font.txt`, `art\rooms.txt`.
   `tools\gfx.py` turns it into `src\gen\*.asm` on every build (and checks doors line up).
