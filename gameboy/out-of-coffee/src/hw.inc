@@ -8,6 +8,7 @@ DEF rSTAT  EQU $FF41
 DEF rSCY   EQU $FF42
 DEF rSCX   EQU $FF43
 DEF rLY    EQU $FF44   ; current scanline
+DEF rLYC   EQU $FF45   ; scanline compare (STAT interrupt)
 DEF rDMA   EQU $FF46   ; OAM DMA start
 DEF rBGP   EQU $FF47   ; background palette
 DEF rOBP0  EQU $FF48   ; sprite palette 0

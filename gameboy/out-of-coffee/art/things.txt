@@ -1,0 +1,23 @@
+; Things John can talk to or look at: face them and press A.
+;   @thing NAME room=ROOM at=X,Y sprite=NAME   a person (16x16 sprite) standing on tiles X,Y (2x2 tiles)
+;   @thing NAME room=ROOM at=X,Y size=WxH      something already drawn in the room, W x H tiles
+; X,Y count tiles from the room's top left (0,0). People block John's path.
+; Each line below a header starts a new text box; a long line carries on in the next box.
+; A box holds 2 lines of 18 letters. The font has capitals only (lowercase shows as capitals).
+
+@thing JOSEF room=BRIDGE at=10,7 sprite=josef
+Lieutenant Johnson. Do you hear that wheezing?
+That is the sound of my patience. And of the coffee machine.
+Fix it. A captain cannot command on decaf.
+
+@thing COMMS room=BRIDGE at=12,5 sprite=comms
+That's his fourth cup today. Before breakfast.
+(The comms officer rolls their eyes.)
+
+@thing JIMMIE room=HANGAR at=16,6 sprite=jimmie
+Don't look at my foot, John.
+There is nothing on my foot.
+...It's toilet paper, isn't it.
+
+@thing MACHINE room=GALLEY at=1,3 size=2x2
+It wheezes at you.

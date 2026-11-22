@@ -1,9 +1,11 @@
 ; OUT OF COFFEE - a Waste of Space adventure for the Game Boy
 ; Step 1: walk John around the ship, room by room.
+; Step 2: the crew, and text boxes (face someone, press A).
 
 INCLUDE "hw.inc"
 INCLUDE "gen/gfx.asm"
 INCLUDE "gen/rooms.asm"
+INCLUDE "gen/things.asm"
 
 DEF START_ROOM EQU ROOM_CORRIDOR
 
@@ -31,9 +33,24 @@ DEF MASK_RIGHT  EQU %0101
 DEF MASK_TOP    EQU %1100
 DEF MASK_BOTTOM EQU %0011
 
+; Window: HUD at line 128; the text box slides up to line 104 (5 rows)
+DEF HUD_WY  EQU 128
+DEF BOX_WY  EQU 104
+DEF HIDE_WY EQU 144
+DEF BOX_ROW1 EQU $9C21      ; window row 1, column 1
+DEF BOX_ROW2 EQU $9C61      ; window row 3, column 1
+DEF BOX_MORE EQU $9C92      ; window row 4, column 18: blinking arrow
+DEF PHASE_OPEN  EQU 0
+DEF PHASE_TYPE  EQU 1
+DEF PHASE_WAIT  EQU 2
+DEF PHASE_CLOSE EQU 3
+
 
 SECTION "VBlank IRQ", ROM0[$40]
     jp VBlankHandler
+
+SECTION "STAT IRQ", ROM0[$48]
+    jp StatHandler
 
 
 SECTION "Header", ROM0[$100]
@@ -98,8 +115,13 @@ Start:
     ld a, %11100000         ; sprites: 1 white, 2 dark, 3 black
     ldh [rOBP0], a
     ldh [rOBP1], a
-    ld a, 128               ; HUD = window over the bottom 16 lines
+    ld a, HUD_WY            ; HUD = window over the bottom 16 lines
+    ldh [hWY], a
     ldh [rWY], a
+    ld a, HUD_WY - 1        ; sprites off from the window down (StatHandler)
+    ldh [rLYC], a
+    ld a, %01000000         ; STAT interrupt on LY = LYC
+    ldh [rSTAT], a
     ld a, 7
     ldh [rWX], a
     xor a
@@ -115,7 +137,7 @@ Start:
     ld a, START_ROOM
     call LoadRoom           ; also turns the LCD on
 
-    ld a, 1                 ; VBlank interrupt only
+    ld a, %00000011         ; VBlank + STAT interrupts
     ldh [rIE], a
     xor a
     ldh [rIF], a
@@ -130,7 +152,15 @@ MainLoop:
     ldh [hVBlank], a
 
     call ReadPad
+    ld a, [wTalking]
+    and a
+    jr nz, .talking
     call UpdateJohn
+    call CheckTalk
+    jr .draw
+.talking:
+    call UpdateTalk
+.draw:
     call DrawJohn
     jr MainLoop
 
@@ -139,8 +169,29 @@ VBlankHandler:
     push af
     ld a, HIGH(wShadowOAM)
     call hOAMDMA
+    ldh a, [hWY]            ; window position for the coming frame
+    ldh [rWY], a
+    dec a                   ; sprites switch off one line above it
+    cp HIDE_WY - 1
+    jr c, .lyc
+    ld a, $FF               ; window hidden: never
+.lyc:
+    ldh [rLYC], a
+    ldh a, [rLCDC]          ; sprites back on for the top of the screen
+    or %00000010
+    ldh [rLCDC], a
     ld a, 1
     ldh [hVBlank], a
+    pop af
+    reti
+
+
+; Sprites off below the window line, so nobody walks over the HUD or text box
+StatHandler:
+    push af
+    ldh a, [rLCDC]
+    and %11111101
+    ldh [rLCDC], a
     pop af
     reti
 
@@ -242,29 +293,8 @@ LoadRoom:
     dec b
     jr nz, .row
 
-    ld hl, $9C20            ; HUD row 2: room name, centred
-    ld bc, 20
-    ld a, TILE_SPACE
-    call Memset
-    ld a, [wNameLen]
-    ld b, a
-    ld a, 20
-    sub b
-    srl a
-    ld e, a
-    ld d, 0
-    ld hl, $9C20
-    add hl, de
-    ld d, h
-    ld e, l
-    ld a, [wNamePtr]
-    ld l, a
-    ld a, [wNamePtr + 1]
-    ld h, a
-    ld a, [wNameLen]
-    ld c, a
-    ld b, 0
-    call Memcpy
+    call DrawHudName
+    call SetupThings
 
     ld a, LCDC_GAME
     ldh [rLCDC], a
@@ -272,14 +302,26 @@ LoadRoom:
 
 
 ; SolidAt: d = x, e = y (pixels in the room). Carry set if the tile there
-; is solid. Keeps de.
+; is solid. Keeps bc, de.
 SolidAt:
     push de
-    ld a, e
-    srl a
-    srl a
-    srl a
-    ld l, a                 ; hl = row * 20
+    srl d
+    srl d
+    srl d
+    srl e
+    srl e
+    srl e
+    call RoomCell
+    ld a, [hl]
+    pop de
+    cp FIRST_SOLID
+    ccf
+    ret
+
+; RoomCell: d = column, e = row -> hl = that cell in wRoom. Keeps bc, de.
+RoomCell:
+    push bc
+    ld l, e
     ld h, 0
     add hl, hl
     add hl, hl
@@ -287,20 +329,412 @@ SolidAt:
     ld c, l
     add hl, hl
     add hl, hl
-    add hl, bc
-    ld a, d
-    srl a
-    srl a
-    srl a
-    ld c, a
+    add hl, bc              ; row * 20
+    ld c, d
     ld b, 0
     add hl, bc
     ld bc, wRoom
     add hl, bc
+    pop bc
+    ret
+
+; DrawHudName: HUD row 2 = the room's name, centred. Safe with the LCD on.
+DrawHudName:
+    ld hl, $9C20
+    ld b, 20
+    ld a, TILE_SPACE
+    call VramFill
+    ld a, [wNameLen]
+    ld b, a
+    ld a, 20
+    sub b
+    srl a
+    add LOW($9C20)
+    ld l, a
+    ld h, HIGH($9C20)
+    ld a, [wNamePtr]
+    ld e, a
+    ld a, [wNamePtr + 1]
+    ld d, a
+    ld a, [wNameLen]
+    ld b, a
+    jp VramCopy
+
+
+; ---------------------------------------------------------------- things
+; SetupThings: after a room loads - people become sprites (OAM 2+) and every
+; thing's tiles become solid in wRoom.
+SetupThings:
+    ld hl, wShadowOAM + 8
+    ld bc, 160 - 8
+    xor a
+    call Memset
+    ld a, LOW(wShadowOAM + 8)
+    ld [wOamPtr], a
+    ld a, HIGH(wShadowOAM + 8)
+    ld [wOamPtr + 1], a
+
+    ld a, [wRoomId]
+    add a, a
+    ld e, a
+    ld d, 0
+    ld hl, RoomThings
+    add hl, de
+    ld a, [hli]
+    ld h, [hl]
+    ld l, a
+    ld a, [hli]
+    ld [wThingCount], a
+    ld a, l
+    ld [wThingPtr], a
+    ld a, h
+    ld [wThingPtr + 1], a
+    ld a, [wThingCount]
+    and a
+    ret z
+    ld b, a
+.thing:
+    push bc
+    ld a, [hli]
+    ld [wTX], a
+    ld a, [hli]
+    ld [wTY], a
+    ld a, [hli]
+    ld [wTW], a
+    ld a, [hli]
+    ld [wTH], a
+    ld a, [hli]
+    ld [wTSpr], a
+    inc hl                  ; talk pointer
+    inc hl
+    push hl
+    call MarkThing
+    call SpriteThing
+    pop hl
+    pop bc
+    dec b
+    jr nz, .thing
+    ret
+
+MarkThing:
+    ld a, [wTH]
+    ld c, a
+    ld a, [wTY]
+    ld e, a
+.row:
+    ld a, [wTX]
+    ld d, a
+    call RoomCell
+    ld a, [wTW]
+    ld b, a
+.col:
+    ld [hl], FIRST_SOLID
+    inc hl
+    dec b
+    jr nz, .col
+    inc e
+    dec c
+    jr nz, .row
+    ret
+
+SpriteThing:
+    ld a, [wTSpr]
+    cp $FF
+    ret z
+    ld c, a
+    ld a, [wOamPtr]
+    ld l, a
+    ld a, [wOamPtr + 1]
+    ld h, a
+    ld a, [wTY]
+    add a, a
+    add a, a
+    add a, a
+    add 16
+    ld d, a
+    ld a, [wTX]
+    add a, a
+    add a, a
+    add a, a
+    add 8
+    ld e, a
+    ld a, d
+    ld [hli], a
+    ld a, e
+    ld [hli], a
+    ld a, c
+    ld [hli], a
+    xor a
+    ld [hli], a
+    ld a, d
+    ld [hli], a
+    ld a, e
+    add 8
+    ld [hli], a
+    ld a, c
+    add 2
+    ld [hli], a
+    xor a
+    ld [hli], a
+    ld a, l
+    ld [wOamPtr], a
+    ld a, h
+    ld [wOamPtr + 1], a
+    ret
+
+; CheckTalk: A pressed -> is there a thing just in front of John's feet?
+CheckTalk:
+    ldh a, [hNew]
+    bit PADB_A, a
+    ret z
+    ld a, [wDir]
+    cp DIR_UP
+    jr z, .up
+    cp DIR_LEFT
+    jr z, .left
+    cp DIR_RIGHT
+    jr z, .right
+    ld a, [wX]              ; down
+    add 8
+    ld d, a
+    ld a, [wY]
+    add FEET_T + FEET_H + 4
+    ld e, a
+    jr .probe
+.up:
+    ld a, [wX]
+    add 8
+    ld d, a
+    ld a, [wY]
+    add FEET_T - 4
+    ld e, a
+    jr .probe
+.left:
+    ld a, [wX]
+    add FEET_L - 4
+    ld d, a
+    ld a, [wY]
+    add 12
+    ld e, a
+    jr .probe
+.right:
+    ld a, [wX]
+    add FEET_L + FEET_W + 4
+    ld d, a
+    ld a, [wY]
+    add 12
+    ld e, a
+.probe:
+    ld a, [wThingCount]
+    and a
+    ret z
+    ld b, a
+    ld a, [wThingPtr]
+    ld l, a
+    ld a, [wThingPtr + 1]
+    ld h, a
+.loop:
+    push bc
+    push hl
+    ld a, [hli]             ; left = tx * 8
+    add a, a
+    add a, a
+    add a, a
+    ld c, a
+    ld a, [hli]             ; top = ty * 8
+    add a, a
+    add a, a
+    add a, a
+    ld b, a
+    ld a, d
+    sub c
+    jr c, .miss
+    ld c, a                 ; c = d - left
+    ld a, [hli]             ; width in pixels
+    add a, a
+    add a, a
+    add a, a
+    cp c
+    jr c, .miss
+    jr z, .miss
+    ld a, e
+    sub b
+    jr c, .miss
+    ld b, a                 ; b = e - top
+    ld a, [hli]             ; height in pixels
+    add a, a
+    add a, a
+    add a, a
+    cp b
+    jr c, .miss
+    jr z, .miss
+    inc hl                  ; sprite
+    ld a, [hli]
+    ld h, [hl]
+    ld l, a
+    pop bc                  ; (saved hl)
+    pop bc
+    jp StartTalk
+.miss:
+    pop hl
+    ld bc, THING_SIZE
+    add hl, bc
+    pop bc
+    dec b
+    jr nz, .loop
+    ret
+
+
+; ---------------------------------------------------------------- text box
+; StartTalk: hl = talk data (page count, then pages of 2 x BOX_W tiles)
+StartTalk:
+    ld a, [hli]
+    ld [wPagesLeft], a
+    ld a, l
+    ld [wPagePtr], a
+    ld a, h
+    ld [wPagePtr + 1], a
+    ld a, 1
+    ld [wTalking], a
+    xor a
+    ld [wMoving], a
+    ld a, PHASE_OPEN
+    ld [wPhase], a
+    ld a, HIDE_WY
+    ldh [hWY], a
+    jp ClearBox
+
+; ClearBox: window rows 1-4 to spaces (row 0 is the line on top)
+ClearBox:
+    ld hl, $9C20
+    ld c, 4
+.row:
+    ld b, 20
+    ld a, TILE_SPACE
+    call VramFill
+    ld a, l
+    add 32 - 20
+    ld l, a
+    jr nc, .noCarry
+    inc h
+.noCarry:
+    dec c
+    jr nz, .row
+    ret
+
+UpdateTalk:
+    ld a, [wPhase]
+    cp PHASE_OPEN
+    jr z, .open
+    cp PHASE_TYPE
+    jr z, .type
+    cp PHASE_WAIT
+    jr z, .wait
+    ldh a, [hWY]            ; closing: slide down
+    add 4
+    ldh [hWY], a
+    cp HIDE_WY
+    ret c
+    call DrawHudName
+    ld a, HUD_WY
+    ldh [hWY], a
+    xor a
+    ld [wTalking], a
+    ret
+.open:                      ; slide up
+    ldh a, [hWY]
+    sub 4
+    ldh [hWY], a
+    cp BOX_WY
+    ret nz
+    ld a, PHASE_TYPE
+    ld [wPhase], a
+    xor a
+    ld [wTypePos], a
+    ret
+.type:                      ; one letter a frame; A shows the rest at once
+    ldh a, [hNew]
+    bit PADB_A, a
+    jp z, TypeOne
+.rest:
+    call TypeOne
+    ld a, [wPhase]
+    cp PHASE_TYPE
+    jr z, .rest
+    ret
+.wait:
+    ld hl, wBlink
+    inc [hl]
     ld a, [hl]
-    pop de
-    cp FIRST_SOLID
-    ccf
+    and 15
+    jr nz, .noBlink
+    ld a, [hl]
+    and 16
+    ld a, TILE_ARROW
+    jr z, .show
+    ld a, TILE_SPACE
+.show:
+    ld hl, BOX_MORE
+    ld b, 1
+    call VramFill
+.noBlink:
+    ldh a, [hNew]
+    bit PADB_A, a
+    ret z
+    ld hl, wPagesLeft
+    dec [hl]
+    jr z, .close
+    ld a, [wPagePtr]        ; next page
+    add PAGE_LEN
+    ld [wPagePtr], a
+    ld a, [wPagePtr + 1]
+    adc 0
+    ld [wPagePtr + 1], a
+    call ClearBox
+    ld a, PHASE_TYPE
+    ld [wPhase], a
+    xor a
+    ld [wTypePos], a
+    ret
+.close:
+    ld a, PHASE_CLOSE
+    ld [wPhase], a
+    ret
+
+; TypeOne: put the next letter of the page in the box
+TypeOne:
+    ld a, [wTypePos]
+    ld c, a
+    ld a, [wPagePtr]
+    add c
+    ld e, a
+    ld a, [wPagePtr + 1]
+    adc 0
+    ld d, a
+    ld a, c
+    cp BOX_W
+    jr nc, .line2
+    add LOW(BOX_ROW1)
+    ld l, a
+    ld h, HIGH(BOX_ROW1)
+    jr .put
+.line2:
+    sub BOX_W
+    add LOW(BOX_ROW2)
+    ld l, a
+    ld h, HIGH(BOX_ROW2)
+.put:
+    ld b, 1
+    call VramCopy
+    inc c
+    ld a, c
+    ld [wTypePos], a
+    cp PAGE_LEN
+    ret nz
+    ld a, PHASE_WAIT
+    ld [wPhase], a
+    ld a, 15                ; arrow shows on the next frame
+    ld [wBlink], a
     ret
 
 
@@ -591,6 +1025,31 @@ DrawJohn:
 
 
 ; ---------------------------------------------------------------- helpers
+; VramFill: hl = dest, b = count, a = value. Waits for VRAM each byte (LCD on is fine).
+VramFill:
+    ld d, a
+.loop:
+    ldh a, [rSTAT]
+    and %10
+    jr nz, .loop
+    ld [hl], d
+    inc hl
+    dec b
+    jr nz, .loop
+    ret
+
+; VramCopy: de = source, hl = dest, b = count. Waits for VRAM each byte. Keeps c.
+VramCopy:
+    ldh a, [rSTAT]
+    and %10
+    jr nz, VramCopy
+    ld a, [de]
+    ld [hli], a
+    inc de
+    dec b
+    jr nz, VramCopy
+    ret
+
 ; Memcpy: hl = source, de = dest, bc = count (> 0)
 Memcpy:
     ld a, [hli]
@@ -646,8 +1105,23 @@ wMask:    ds 1
 wDir:     ds 1
 wMoving:  ds 1
 wAnim:    ds 1
+wThingCount: ds 1
+wThingPtr:   ds 2
+wOamPtr:     ds 2
+wTX:      ds 1
+wTY:      ds 1
+wTW:      ds 1
+wTH:      ds 1
+wTSpr:    ds 1
+wTalking: ds 1
+wPhase:   ds 1
+wPagesLeft: ds 1
+wPagePtr: ds 2
+wTypePos: ds 1
+wBlink:   ds 1
 
 SECTION "HRAM vars", HRAM
 hKeys:   ds 1
 hNew:    ds 1
 hVBlank: ds 1
+hWY:     ds 1
