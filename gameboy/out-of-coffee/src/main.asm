@@ -1,0 +1,653 @@
+; OUT OF COFFEE - a Waste of Space adventure for the Game Boy
+; Step 1: walk John around the ship, room by room.
+
+INCLUDE "hw.inc"
+INCLUDE "gen/gfx.asm"
+INCLUDE "gen/rooms.asm"
+
+DEF START_ROOM EQU ROOM_CORRIDOR
+
+DEF DIR_DOWN  EQU 0
+DEF DIR_UP    EQU 1
+DEF DIR_LEFT  EQU 2
+DEF DIR_RIGHT EQU 3
+
+DEF LINK_N EQU 0
+DEF LINK_S EQU 1
+DEF LINK_W EQU 2
+DEF LINK_E EQU 3
+
+; John is 16x16; x 0..144, y 0..112 keeps him inside the 160x128 room.
+DEF MAX_X EQU 144
+DEF MAX_Y EQU 112
+; His feet are the box that collides: x+3..x+12, y+9..y+15
+DEF FEET_L EQU 3
+DEF FEET_W EQU 9     ; right edge = left + 9
+DEF FEET_T EQU 9
+DEF FEET_H EQU 6     ; bottom edge = top + 6
+; TryMove's blocked mask: corners shifted in TL, TR, BL, BR
+DEF MASK_LEFT   EQU %1010
+DEF MASK_RIGHT  EQU %0101
+DEF MASK_TOP    EQU %1100
+DEF MASK_BOTTOM EQU %0011
+
+
+SECTION "VBlank IRQ", ROM0[$40]
+    jp VBlankHandler
+
+
+SECTION "Header", ROM0[$100]
+    nop
+    jp Start
+    ds $150 - @, 0          ; rgbfix fills in the header
+
+
+SECTION "Main", ROM0
+
+Start:
+    di
+    ld sp, $E000
+.waitVB:                    ; the LCD may only be turned off in VBlank
+    ldh a, [rLY]
+    cp 144
+    jr c, .waitVB
+    xor a
+    ldh [rLCDC], a
+    ldh [rNR52], a          ; sound off until there is music
+
+    ld hl, $C000            ; clear WRAM
+    ld bc, $2000
+.clrW:
+    xor a
+    ld [hli], a
+    dec bc
+    ld a, b
+    or c
+    jr nz, .clrW
+
+    ld hl, $FF80            ; clear HRAM
+    ld c, $7F
+.clrH:
+    xor a
+    ld [hli], a
+    dec c
+    jr nz, .clrH
+
+    ld hl, DMARoutineROM    ; OAM DMA routine has to run from HRAM
+    ld de, hOAMDMA
+    ld bc, hOAMDMA.end - hOAMDMA
+    call Memcpy
+
+    ld hl, AllTiles
+    ld de, $8000
+    ld bc, AllTilesEnd - AllTiles
+    call Memcpy
+
+    ld hl, $FE00            ; clear OAM
+    ld bc, 160
+    xor a
+    call Memset
+
+    ld hl, $9C00            ; HUD: divider line on the window's top row
+    ld bc, 20
+    ld a, TILE_HUDLINE
+    call Memset
+
+    ld a, %11100100         ; BG: 0 white, 1 light, 2 dark, 3 black
+    ldh [rBGP], a
+    ld a, %11100000         ; sprites: 1 white, 2 dark, 3 black
+    ldh [rOBP0], a
+    ldh [rOBP1], a
+    ld a, 128               ; HUD = window over the bottom 16 lines
+    ldh [rWY], a
+    ld a, 7
+    ldh [rWX], a
+    xor a
+    ldh [rSCX], a
+    ldh [rSCY], a
+
+    ld a, 72
+    ld [wX], a
+    ld a, 64
+    ld [wY], a
+    ld a, DIR_DOWN
+    ld [wDir], a
+    ld a, START_ROOM
+    call LoadRoom           ; also turns the LCD on
+
+    ld a, 1                 ; VBlank interrupt only
+    ldh [rIE], a
+    xor a
+    ldh [rIF], a
+    ei
+
+MainLoop:
+    halt
+    ldh a, [hVBlank]
+    and a
+    jr z, MainLoop
+    xor a
+    ldh [hVBlank], a
+
+    call ReadPad
+    call UpdateJohn
+    call DrawJohn
+    jr MainLoop
+
+
+VBlankHandler:
+    push af
+    ld a, HIGH(wShadowOAM)
+    call hOAMDMA
+    ld a, 1
+    ldh [hVBlank], a
+    pop af
+    reti
+
+
+; ---------------------------------------------------------------- joypad
+; hKeys = held, hNew = pressed this frame
+; bits: 0 A, 1 B, 2 Select, 3 Start, 4 Right, 5 Left, 6 Up, 7 Down
+ReadPad:
+    ld a, $20               ; d-pad
+    ldh [rP1], a
+    ldh a, [rP1]
+    ldh a, [rP1]
+    cpl
+    and $0F
+    swap a
+    ld b, a
+    ld a, $10               ; buttons
+    ldh [rP1], a
+    ldh a, [rP1]
+    ldh a, [rP1]
+    ldh a, [rP1]
+    ldh a, [rP1]
+    ldh a, [rP1]
+    ldh a, [rP1]
+    cpl
+    and $0F
+    or b
+    ld b, a
+    ldh a, [hKeys]
+    cpl
+    and b
+    ldh [hNew], a
+    ld a, b
+    ldh [hKeys], a
+    ld a, $30
+    ldh [rP1], a
+    ret
+
+
+; ---------------------------------------------------------------- rooms
+; LoadRoom: a = room id. Turns the LCD off in VBlank, draws the room and
+; its name in the HUD, turns the LCD back on.
+LoadRoom:
+    ld [wRoomId], a
+    add a, a
+    ld e, a
+    ld d, 0
+    ld hl, RoomTable
+    add hl, de
+    ld a, [hli]
+    ld h, [hl]
+    ld l, a
+
+    ld de, wLinks           ; n, s, w, e
+    ld bc, 4
+    call Memcpy
+    ld a, [hli]             ; name: length, then tiles
+    ld [wNameLen], a
+    ld a, l
+    ld [wNamePtr], a
+    ld a, h
+    ld [wNamePtr + 1], a
+    ld a, [wNameLen]
+    ld e, a
+    ld d, 0
+    add hl, de
+    ld de, wRoom            ; map: 20x16 tiles
+    ld bc, 20 * 16
+    call Memcpy
+
+    ldh a, [rLCDC]
+    bit 7, a
+    jr z, .lcdIsOff
+.waitVB:
+    ldh a, [rLY]
+    cp 144
+    jr c, .waitVB
+    xor a
+    ldh [rLCDC], a
+.lcdIsOff:
+
+    ld hl, wRoom            ; room -> BG map (32 tiles a row)
+    ld de, $9800
+    ld b, 16
+.row:
+    ld c, 20
+.col:
+    ld a, [hli]
+    ld [de], a
+    inc de
+    dec c
+    jr nz, .col
+    ld a, e
+    add 32 - 20
+    ld e, a
+    jr nc, .noCarry
+    inc d
+.noCarry:
+    dec b
+    jr nz, .row
+
+    ld hl, $9C20            ; HUD row 2: room name, centred
+    ld bc, 20
+    ld a, TILE_SPACE
+    call Memset
+    ld a, [wNameLen]
+    ld b, a
+    ld a, 20
+    sub b
+    srl a
+    ld e, a
+    ld d, 0
+    ld hl, $9C20
+    add hl, de
+    ld d, h
+    ld e, l
+    ld a, [wNamePtr]
+    ld l, a
+    ld a, [wNamePtr + 1]
+    ld h, a
+    ld a, [wNameLen]
+    ld c, a
+    ld b, 0
+    call Memcpy
+
+    ld a, LCDC_GAME
+    ldh [rLCDC], a
+    ret
+
+
+; SolidAt: d = x, e = y (pixels in the room). Carry set if the tile there
+; is solid. Keeps de.
+SolidAt:
+    push de
+    ld a, e
+    srl a
+    srl a
+    srl a
+    ld l, a                 ; hl = row * 20
+    ld h, 0
+    add hl, hl
+    add hl, hl
+    ld b, h
+    ld c, l
+    add hl, hl
+    add hl, hl
+    add hl, bc
+    ld a, d
+    srl a
+    srl a
+    srl a
+    ld c, a
+    ld b, 0
+    add hl, bc
+    ld bc, wRoom
+    add hl, bc
+    ld a, [hl]
+    pop de
+    cp FIRST_SOLID
+    ccf
+    ret
+
+
+; ---------------------------------------------------------------- John
+UpdateJohn:
+    xor a
+    ld [wMoving], a
+    ldh a, [hKeys]
+    bit PADB_UP, a
+    jr z, .notUp
+    call GoUp
+    jr .horiz
+.notUp:
+    ldh a, [hKeys]
+    bit PADB_DOWN, a
+    call nz, GoDown
+.horiz:
+    ldh a, [hKeys]
+    bit PADB_LEFT, a
+    jr z, .notLeft
+    call GoLeft
+    jr .anim
+.notLeft:
+    ldh a, [hKeys]
+    bit PADB_RIGHT, a
+    call nz, GoRight
+.anim:
+    ld a, [wMoving]
+    and a
+    ret z
+    ld hl, wAnim
+    inc [hl]
+    ret
+
+GoUp:
+    ld a, DIR_UP
+    call Walking
+    ld a, [wY]
+    and a
+    jr nz, .walk
+    ld a, [wLinks + LINK_N]
+    cp $FF
+    ret z
+    ld b, a
+    ld a, MAX_Y
+    ld [wY], a
+    ld a, b
+    jp LoadRoom
+.walk:
+    ld bc, $00FF            ; dx 0, dy -1
+    call TryMove
+    jp AssistV
+
+GoDown:
+    ld a, DIR_DOWN
+    call Walking
+    ld a, [wY]
+    cp MAX_Y
+    jr c, .walk
+    ld a, [wLinks + LINK_S]
+    cp $FF
+    ret z
+    ld b, a
+    xor a
+    ld [wY], a
+    ld a, b
+    jp LoadRoom
+.walk:
+    ld bc, $0001            ; dx 0, dy +1
+    call TryMove
+    jp AssistV
+
+GoLeft:
+    ld a, DIR_LEFT
+    call Walking
+    ld a, [wX]
+    and a
+    jr nz, .walk
+    ld a, [wLinks + LINK_W]
+    cp $FF
+    ret z
+    ld b, a
+    ld a, MAX_X
+    ld [wX], a
+    ld a, b
+    jp LoadRoom
+.walk:
+    ld bc, $FF00            ; dx -1, dy 0
+    call TryMove
+    jp AssistH
+
+GoRight:
+    ld a, DIR_RIGHT
+    call Walking
+    ld a, [wX]
+    cp MAX_X
+    jr c, .walk
+    ld a, [wLinks + LINK_E]
+    cp $FF
+    ret z
+    ld b, a
+    xor a
+    ld [wX], a
+    ld a, b
+    jp LoadRoom
+.walk:
+    ld bc, $0100            ; dx +1, dy 0
+    call TryMove
+    jp AssistH
+
+Walking:
+    ld [wDir], a
+    ld a, 1
+    ld [wMoving], a
+    ret
+
+; TryMove: b = dx, c = dy (signed). Moves John if his feet fit.
+; Out: a = blocked corners (0 = moved).
+TryMove:
+    ld a, [wX]
+    add b
+    ld [wNX], a
+    cp MAX_X + 1
+    jr nc, .outside
+    ld a, [wY]
+    add c
+    ld [wNY], a
+    cp MAX_Y + 1
+    jr nc, .outside
+
+    xor a
+    ld [wMask], a
+    ld a, [wNX]
+    add FEET_L
+    ld d, a
+    ld a, [wNY]
+    add FEET_T
+    ld e, a
+    call SolidAt            ; top left
+    call .addBit
+    ld a, d
+    add FEET_W
+    ld d, a
+    call SolidAt            ; top right
+    call .addBit
+    ld a, d
+    sub FEET_W
+    ld d, a
+    ld a, e
+    add FEET_H
+    ld e, a
+    call SolidAt            ; bottom left
+    call .addBit
+    ld a, d
+    add FEET_W
+    ld d, a
+    call SolidAt            ; bottom right
+    call .addBit
+
+    ld a, [wMask]
+    and a
+    ret nz
+    ld a, [wNX]
+    ld [wX], a
+    ld a, [wNY]
+    ld [wY], a
+    xor a
+    ret
+.outside:
+    ld a, $0F
+    and a
+    ret
+.addBit:                    ; shift carry into the mask
+    ld a, [wMask]
+    rla
+    ld [wMask], a
+    ret
+
+; Corner help: walking up/down with only one side of the feet caught,
+; slide sideways round the corner (so doorways are easy to hit).
+AssistV:
+    and a
+    ret z
+    ld b, a
+    and MASK_LEFT
+    jr z, .slideLeft
+    ld a, b
+    and MASK_RIGHT
+    ret nz
+    ld bc, $0100
+    jp TryMove
+.slideLeft:
+    ld bc, $FF00
+    jp TryMove
+
+AssistH:
+    and a
+    ret z
+    ld b, a
+    and MASK_TOP
+    jr z, .slideUp
+    ld a, b
+    and MASK_BOTTOM
+    ret nz
+    ld bc, $0001
+    jp TryMove
+.slideUp:
+    ld bc, $00FF
+    jp TryMove
+
+; DrawJohn: two 8x16 sprites into shadow OAM 0-1
+DrawJohn:
+    ld a, [wDir]
+    ld b, a
+    cp DIR_LEFT
+    jr c, .upDown
+    ld a, 2                 ; side frames
+.upDown:
+    add a, a                ; frame = pose * 2 (+1 every 8 frames walking)
+    ld c, a
+    ld a, [wMoving]
+    and a
+    jr z, .still
+    ld a, [wAnim]
+    srl a
+    srl a
+    srl a
+    and 1
+    add c
+    ld c, a
+.still:
+    ld a, c
+    add a, a
+    add a, a
+    add SPR_JOHN_DOWN0
+    ld c, a                 ; c = left half tile, c+2 = right half
+
+    ld hl, wShadowOAM
+    ld a, [wY]
+    add 16
+    ld d, a
+    ld a, [wX]
+    add 8
+    ld e, a
+    ld a, b
+    cp DIR_LEFT
+    jr z, .flipped
+
+    ld a, d
+    ld [hli], a
+    ld a, e
+    ld [hli], a
+    ld a, c
+    ld [hli], a
+    xor a
+    ld [hli], a
+    ld a, d
+    ld [hli], a
+    ld a, e
+    add 8
+    ld [hli], a
+    ld a, c
+    add 2
+    ld [hli], a
+    xor a
+    ld [hli], a
+    ret
+.flipped:                   ; mirror: halves swap sides
+    ld a, d
+    ld [hli], a
+    ld a, e
+    ld [hli], a
+    ld a, c
+    add 2
+    ld [hli], a
+    ld a, $20
+    ld [hli], a
+    ld a, d
+    ld [hli], a
+    ld a, e
+    add 8
+    ld [hli], a
+    ld a, c
+    ld [hli], a
+    ld a, $20
+    ld [hli], a
+    ret
+
+
+; ---------------------------------------------------------------- helpers
+; Memcpy: hl = source, de = dest, bc = count (> 0)
+Memcpy:
+    ld a, [hli]
+    ld [de], a
+    inc de
+    dec bc
+    ld a, b
+    or c
+    jr nz, Memcpy
+    ret
+
+; Memset: hl = dest, bc = count (> 0), a = value
+Memset:
+    ld d, a
+.loop:
+    ld a, d
+    ld [hli], a
+    dec bc
+    ld a, b
+    or c
+    jr nz, .loop
+    ret
+
+
+SECTION "OAM DMA routine", ROM0
+DMARoutineROM:
+LOAD "OAM DMA", HRAM
+hOAMDMA:                    ; a = high byte of the source
+    ldh [rDMA], a
+    ld a, 40
+.wait:
+    dec a
+    jr nz, .wait
+    ret
+.end:
+ENDL
+
+
+SECTION "Shadow OAM", WRAM0, ALIGN[8]
+wShadowOAM: ds 160
+
+SECTION "Game vars", WRAM0
+wRoom:    ds 20 * 16        ; current room's tiles (collision)
+wLinks:   ds 4
+wRoomId:  ds 1
+wNameLen: ds 1
+wNamePtr: ds 2
+wX:       ds 1
+wY:       ds 1
+wNX:      ds 1
+wNY:      ds 1
+wMask:    ds 1
+wDir:     ds 1
+wMoving:  ds 1
+wAnim:    ds 1
+
+SECTION "HRAM vars", HRAM
+hKeys:   ds 1
+hNew:    ds 1
+hVBlank: ds 1
