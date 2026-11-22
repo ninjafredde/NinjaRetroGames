@@ -67,5 +67,12 @@ multicolour bitmap on top (view, title, pixel minimap), text below (crew, status
 VIC bank 3: screen $c000, sprites $c400/$cc00, letters $c800, bitmap $e000; work memory $8000.
 - M1 (done): the split screen; the view's cell codes turned into 4x8 fat-pixel patterns
   (`FAT` in `src/view.asm`), so it looks like the text version, in bitmap.
-- M2: painted pieces made by a Python script + a converter (PNG -> cell data).
-- M3: polish (per-deck art, faster drawing).
+- M2 (done): the view is painted art. `tools/art.py paint` paints `art/view.png` from code
+  (a sheet of 18 frames: background + 17 pieces, C64 colours, dithered light);
+  `tools/art.py convert` (run by build.bat) turns it into `src/gen/view_art.asm`
+  (8x8 cells, 3 colours + black each, repeats shared). Repaint the PNG in any editor:
+  keep the C64 colours, at most 3 + black per 8x8 cell (2-wide pixels). Running `paint`
+  again OVERWRITES the PNG.
+  Per deck: `DECK_REMAP` (the art's colours on that deck) and `DECK_FOG` (darker by depth)
+  in `src/map.asm`, applied through colour tables when a deck loads.
+- M3: faster drawing (it takes ~5 frames now: a visible wipe), polish.

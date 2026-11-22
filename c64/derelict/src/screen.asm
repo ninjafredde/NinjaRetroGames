@@ -235,16 +235,31 @@ bt:     lda (tp),y
         rts
 
 // ---------------------------------------------------------------- the view on screen
-// every code in BUFC -> its pattern; inks from BUFK; floor + ceiling colours in the screen byte
+// every cell: its pattern into the bitmap, its screen byte and ink through this deck's
+// tables for its depth (deck colours, fog)
 present:
-        lda #<BUFC
+        lda #<BUFL
         sta bc
-        lda #>BUFC
+        lda #>BUFL
         sta bc+1
+        lda #<BUFH
+        sta bh
+        lda #>BUFH
+        sta bh+1
+        lda #<BUFS
+        sta bs
+        lda #>BUFS
+        sta bs+1
         lda #<BUFK
         sta bk
         lda #>BUFK
         sta bk+1
+        lda #<BUFD
+        sta bd
+        lda #>BUFD
+        sta bd+1
+        lda #0
+        sta stp
         lda #<(BITMAP + VX*8)
         sta dp
         lda #>(BITMAP + VX*8)
@@ -263,15 +278,26 @@ pr_row: ldy #0
 pr_cell:
         sty pcol
         lda (bc),y
-        tax
-        lda mc_lo,x
         sta pp
-        lda mc_hi,x
+        lda (bh),y
         sta pp+1
-        lda view_scr
-        sta (sr),y
+        lda (bd),y              // depth -> its tables
+        tax
+        lda scr_page,x
+        sta stp+1
+        lda ink_base,x
+        sta ib
         lda (bk),y
+        and #15
+        ora ib
+        tax
+        lda INKTAB,x
         sta (crp),y
+        lda (bs),y
+        tay
+        lda (stp),y
+        ldy pcol
+        sta (sr),y
         .for (var b=7; b>=0; b--) {
             ldy #b
             lda (pp),y
@@ -287,19 +313,17 @@ pr_cell:
         iny
         cpy #VW
         bne pr_cell
-        lda bc                  // next row
-        clc
-        adc #VW
-        sta bc
-        bcc !+
-        inc bc+1
-!:      lda bk
-        clc
-        adc #VW
-        sta bk
-        bcc !+
-        inc bk+1
-!:      lda sr
+        .for (var n=0; n<5; n++) {      // next row: the five buffers
+            .var zpv = List().add(bc, bh, bs, bk, bd).get(n)
+            lda zpv
+            clc
+            adc #VW
+            sta zpv
+            bcc !+
+            inc zpv+1
+!:
+        }
+        lda sr
         clc
         adc #40
         sta sr
@@ -322,6 +346,9 @@ pr_cell:
         beq !+
         jmp pr_row
 !:      rts
+
+scr_page:   .byte >SCRTAB, >SCRTAB + 1, >SCRTAB + 2, >SCRTAB + 3
+ink_base:   .byte 0, 16, 32, 48
 
 // the frame either side of the view, and the title
 draw_frame:

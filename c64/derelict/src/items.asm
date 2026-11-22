@@ -59,7 +59,80 @@ ld:     lda (sp),y
         lda pos
         sta prev_pos
         jsr set_dir
+        jsr build_tabs
         jmp draw_minimap
+
+// the view's colour tables for this deck: INKTAB[depth*16 + c] = c in this deck's colours
+// (DECK_REMAP), dimmed for the fog at that depth; SCRTAB[depth][b] = both nibbles of b so
+build_tabs:
+        lda deck
+        asl
+        asl
+        asl
+        asl
+        sta t0
+        ldx #63
+bi:     txa
+        and #15
+        ora t0
+        tay
+        lda deck_remap,y
+        sta t1
+        txa
+        lsr
+        lsr
+        lsr
+        lsr
+        tay
+        lda fogtab,y
+        tay
+        lda t1
+        cpy #0
+        beq bi_put
+!:      stx fx
+        tax
+        lda ramp,x
+        ldx fx
+        dey
+        bne !-
+bi_put: sta INKTAB,x
+        dex
+        bpl bi
+        lda #>SCRTAB
+        sta bs_w+2
+        lda #0
+        sta d16
+bs_d:   ldx #0
+bs_b:   txa
+        lsr
+        lsr
+        lsr
+        lsr
+        ora d16
+        tay
+        lda INKTAB,y
+        asl
+        asl
+        asl
+        asl
+        sta t1
+        txa
+        and #15
+        ora d16
+        tay
+        lda INKTAB,y
+        ora t1
+bs_w:   sta SCRTAB,x
+        inx
+        bne bs_b
+        inc bs_w+2
+        lda d16
+        clc
+        adc #16
+        sta d16
+        cmp #64
+        bne bs_d
+        rts
 
 // ---------------------------------------------------------------- stepping on a cell
 on_cell:
@@ -314,6 +387,8 @@ deck_ceil:  .fill NDECKS, DECK_CEIL.get(i)
 deck_fights: .fill NDECKS, DECK_FIGHTS.get(i)
 deck_lines: .fill NDECKS, DECK_LINES.get(i)
 deck_lamps: .fill NDECKS, DECK_LAMPS.get(i)
+deck_remap:
+.for (var d=0; d<NDECKS; d++) .for (var c=0; c<16; c++) .byte DECK_REMAP.get(d).get(c)
 deck_fog:
 .for (var d=0; d<NDECKS; d++) .for (var k=0; k<4; k++) .byte DECK_FOG.get(d).get(k)
 

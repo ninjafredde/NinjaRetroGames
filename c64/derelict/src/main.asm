@@ -31,13 +31,17 @@
 .const MINI_ROW   = 3           // the minimap's top-left cell (in the bitmap)
 .const MINI_COL   = 23
 // work memory
-.const BUFC    = $8000          // the view is drawn here (codes) ...
-.const BUFK    = $8200          // ... and here (inks), then shown by present
+// the view is drawn into these (one byte per cell each), then shown by present:
+.const BUFL    = $8000          // the cell's pattern (address low)
+.const BUFK    = $8200          // its ink
+.const BUFH    = $9000          // its pattern (address high)
+.const BUFS    = $9200          // its screen byte (two more colours)
 .const BUFD    = $8400          // the view's depth per cell (for the fog)
-.const FOGDUMMY = $8600         // blit writes depths here for pieces that keep the floor's
 .const SEEN    = $8800          // 1 = a map cell you have seen (minimap)
 .label map     = $8900          // this deck: 0 floor, 1 wall, 2 door, 3 locked door
 .label special = $8a00          // this deck: notes, items, hatch, end (see map.asm)
+.const SCRTAB  = $9400          // 4 pages: a screen byte as the fog leaves it, at depth 0-3
+.const INKTAB  = $9800          // 64: an ink at depth 0-3 (deck colours + fog)
 .const LOG     = SCREEN + 22*40 + 1 // the 3 log lines (38 wide)
 .const LOG_W   = 38
 .const VX      = 1              // the view's top-left on the screen
@@ -117,6 +121,14 @@
 .label mi      = $55
 .label prow    = $56
 .label bty     = $57
+.label zp4     = $58            // 2: blit's pattern-high pointer
+.label zp5     = $5a            // 2: blit's screen-byte pointer
+.label bh      = $5c            // 2: present's pointers
+.label bs      = $5e            // 2
+.label bd      = $60            // 2
+.label stp     = $62            // 2: present: this cell's SCRTAB page
+.label ib      = $64            // present: depth * 16
+.label d16     = $65
 
 .macro Print(dest, src, col) {
         ldx #0
@@ -538,63 +550,7 @@ arrow_code: .byte 59 + ON_FLOOR, 61 + ON_FLOOR, 62 + ON_FLOOR, 63 + ON_FLOOR
 #import "items.asm"
 
 // ---------------------------------------------------------------- the fog
-// over the whole view buffer: by each cell's depth and the deck's profile
-.macro FogCell(base) {
-        ldy BUFD+base,x
-        lda fogtab,y
-        beq done
-        sta flvl
-        lda BUFC+base,x
-        sta fcode
-        and #63
-        tay
-        lda glyph_fog,y
-        beq done
-        cmp #2
-        beq dim
-        ldy flvl                // dither: its colour on black
-        lda dither_code,y
-        sta BUFC+base,x
-        lda fcode
-        cmp #64
-        bcc done                // a wall: keep its colour
-        cmp #128
-        bcc on_floor
-        lda fog_ceil
-        sta BUFK+base,x
-        jmp done
-on_floor:
-        lda fog_floor
-        sta BUFK+base,x
-        jmp done
-dim:    stx fx                  // a diagonal edge: darker colour
-        lda BUFK+base,x
-        and #15
-        ldy flvl
-!:      tax
-        lda ramp,x
-        dey
-        bne !-
-        ldx fx
-        sta BUFK+base,x
-done:
-}
-
-fog:
-        ldx #0
-fog1:   FogCell(0)
-        inx
-        cpx #VW*VH/2
-        beq !+
-        jmp fog1
-!:      ldx #0
-fog2:   FogCell(VW*VH/2)
-        inx
-        cpx #VW*VH/2
-        beq !+
-        jmp fog2
-!:      rts
-
+// (the view's fog is in its colour tables, see build_tabs in items.asm)
 // A = a colour, Y = a depth -> A = the colour as the fog leaves it (dimmer)
 fog_colour:
         and #15
@@ -612,37 +568,25 @@ fog_colour:
 
 // ---------------------------------------------------------------- the view
 render:
-        ldx #0                  // ceiling over the horizon, floor under it
-!:      lda #C_CEIL
-        sta BUFC,x
-        lda #C_FLOOR
-        sta BUFC + VW*VH/2,x
-        lda bg_depth,x
-        sta BUFD,x
-        lda bg_depth + VW*VH/2,x
-        sta BUFD + VW*VH/2,x
+        ldx #0                  // the background, then the pieces far to near
+!:      .for (var h=0; h<2; h++) {
+            lda bg_l + h*200,x
+            sta BUFL + h*200,x
+            lda bg_h + h*200,x
+            sta BUFH + h*200,x
+            lda bg_s + h*200,x
+            sta BUFS + h*200,x
+            lda bg_k + h*200,x
+            sta BUFK + h*200,x
+            lda bg_depth + h*200,x
+            sta BUFD + h*200,x
+        }
         inx
-        cpx #VW*VH/2
+        cpx #200
         bne !-
-        lda #C_DARK             // far down the corridor: dark
-        sta BUFC + 9*VW + 9
-        sta BUFC + 9*VW + 10
-        sta BUFC + 10*VW + 9
-        sta BUFC + 10*VW + 10
-        ldx deck                // seams across floor and ceiling, then the lamps
-        lda deck_lines,x
-        sta ovr
-        lda #P_SEAMS
-        jsr blit
-        ldx deck
-        lda deck_lamps,x
-        sta ovr
-        lda #P_LAMPS
-        jsr blit
         Depth(2)
         Depth(1)
         Depth(0)
-        jsr fog
         jmp present
 
 // A = piece number: write its cells into the buffers
@@ -676,34 +620,48 @@ b_go:   lda p_count,x
         sta s3+1
         lda pc_hi,x
         sta s3+2
-        lda piece_depth,x       // the depth it writes ($ff: none, to a dummy page)
+        lda pe_lo,x
+        sta s6+1
+        lda pe_hi,x
+        sta s6+2
+        lda pf_lo,x
+        sta s5+1
+        lda pf_hi,x
+        sta s5+2
+        lda piece_depth,x
         sta dv+1
-        ldy #>BUFD
-        cmp #$ff
-        bne !+
-        ldy #>FOGDUMMY
-!:      sty dh+1
         ldx #0
 bl:
-s1:     lda $ffff,x
+s1:     lda $ffff,x             // where (low)
         sta zp
         sta zp2
         sta zp3
-s2:     lda $ffff,x
+        sta zp4
+        sta zp5
+s2:     lda $ffff,x             // where (high: 0 or 1)
         tay
-        ora #>BUFC
+        ora #>BUFL
         sta zp+1
         ora #>BUFK
         sta zp2+1
         tya
-dh:     ora #>BUFD
+        ora #>BUFD
         sta zp3+1
+        tya
+        ora #>BUFH
+        sta zp4+1
+        ora #>BUFS
+        sta zp5+1
         ldy #0
-s3:     lda $ffff,x
+s3:     lda $ffff,x             // pattern low
         sta (zp),y
-s4:     lda $ffff,x
+s6:     lda $ffff,x             // pattern high
+        sta (zp4),y
+s5:     lda $ffff,x             // screen byte
+        sta (zp5),y
+s4:     lda $ffff,x             // ink (or one colour for all: ovr)
         sta (zp2),y
-dv:     lda #0
+dv:     lda #0                  // depth
         sta (zp3),y
         inx
 bn:     cpx #0
@@ -751,4 +709,4 @@ mon_sprite_data:
 item_sprite_data:
 .for (var n=0; n<NITEM_PICS; n++) ItemSprite(ITEM_PICS.get(n))
 
-.errorif * > BUFC, "the program runs into the work memory at $8000"
+.errorif * > BUFL, "the program runs into the work memory at $8000"

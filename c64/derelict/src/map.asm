@@ -54,10 +54,17 @@
 .var DECK_FIGHTS = List().add(24, 36)      // fight chance each step, out of 256
 .var DECK_LINES  = List().add(12, 9)       // the seams across floor and ceiling
 .var DECK_LAMPS  = List().add(0, 11)       // 0: lamps lit; a colour: dead lamps in it
-// fog at depth 0 (your cell), 1, 2, 3 cells ahead: 0 clear, 1-3 thicker and thicker, 4 black
+// fog at depth 0 (your cell), 1, 2, 3 cells ahead: how many steps darker the colours
+// get (the painted art already fades into the dark; this is extra, per deck)
 .var DECK_FOG    = List().add(
-    List().add(0, 0, 1, 2),
-    List().add(0, 1, 2, 3))
+    List().add(0, 0, 0, 1),
+    List().add(0, 1, 1, 2))
+// the painted view's colours on each deck: colour n is drawn as entry n
+//  0 black 1 white 2 red 3 cyan 4 purple 5 green 6 blue 7 yellow
+//  8 orange 9 brown 10 light red 11 dark grey 12 grey 13 light green 14 light blue 15 light grey
+.var DECK_REMAP  = List().add(
+    List().add(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    List().add(0, 1, 2, 3, 4, 5, 0, 11, 9, 8, 10, 11, 12, 13, 14, 15))   // lights out: ceiling black, dead lamps; rust
 
 // at most 38 characters each
 .var NOTES = List().add(
