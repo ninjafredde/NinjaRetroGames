@@ -1,7 +1,7 @@
 @echo off
 rem Double-click: build Out of Coffee and play it in SameBoy.
 cd /d "%~dp0"
-call build.bat
+call "%~dp0build.bat"
 if errorlevel 1 (
   echo.
   echo Build failed - see above.
