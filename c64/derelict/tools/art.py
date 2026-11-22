@@ -1,7 +1,8 @@
 """The view's art for Derelict (bitmap version).
 
-  python tools/art.py paint     paint art/view.png from code (OVERWRITES your edits!)
-  python tools/art.py convert   art/view.png -> src/gen/view_art.asm (build.bat runs this)
+  python tools/art.py convert       art/*.png -> src/gen/*.asm (build.bat runs this)
+  python tools/art.py paint view    paint art/view.png from code (OVERWRITES your edits!)
+  python tools/art.py paint frame   paint art/frame.png from code (OVERWRITES your edits!)
 
 art/view.png is a sheet of 18 frames (6 x 3), each the whole 20 x 20 cell view
 (160 x 160 pixels; one C64 multicolour pixel = 2 screen pixels wide). Frame 0 is the
@@ -10,6 +11,10 @@ near: walls ahead, side walls, side openings, doors. Each frame only uses the ce
 its piece; magenta cells aren't part of it. Paint with the 16 C64 colours. In every
 8 x 8 cell: black plus at most 3 other colours (the converter squeezes extra colours to
 the nearest of the 3, and says how many cells it had to squeeze).
+
+art/frame.png is the frame around everything: the top 20 rows of the screen (320 x 160,
+2 screen pixels per C64 pixel, the same colour rules). Magenta: the holes the program
+draws itself (the view, the minimap, the title).
 """
 import os, sys, random
 from PIL import Image
@@ -17,6 +22,8 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PNG = os.path.join(ROOT, 'art', 'view.png')
 OUT = os.path.join(ROOT, 'src', 'gen', 'view_art.asm')
+FRAME_PNG = os.path.join(ROOT, 'art', 'frame.png')
+FRAME_OUT = os.path.join(ROOT, 'src', 'gen', 'frame_art.asm')
 
 VW = VH = 20
 INSET = [0, 4, 7, 9]
@@ -219,7 +226,7 @@ def paint_frame(i):
             img[(x, y)] = col
     return img
 
-def paint():
+def paint_view():
     rows = (len(FRAMES) + COLS - 1) // COLS
     sheet = Image.new('RGB', (COLS * FW * 2, rows * FH), MAGENTA)
     px = sheet.load()
@@ -234,98 +241,189 @@ def paint():
     sheet.save(PNG)
     print('painted', PNG)
 
+# ---------------------------------------------------------------- the frame around it all
+# The bitmap part of the screen is 40 x 20 cells. Holes: what the program draws itself
+# (the view, the minimap, the title). Everything else is the frame, drawn once at start.
+SW, SH = 40, 20
+UW, UH = SW * 4, SH * 8                 # 160 x 160 multicolour pixels
+VIEW_R0, VIEW_R1 = 1, 18                # the view rows on screen (the view's own rows 1-18)
+
+def ui_hole(cx, cy):
+    if 1 <= cx <= 20 and VIEW_R0 <= cy <= VIEW_R1:
+        return True                     # the view
+    if 23 <= cx <= 38 and 3 <= cy <= 18:
+        return True                     # the minimap
+    if 23 <= cx <= 38 and 0 <= cy <= 1:
+        return True                     # the title
+    return False
+
+def ui_pixel(x, y):
+    def off(px, py):
+        return px < 0 or py < 0 or px >= UW or py >= UH
+    def hole(px, py):
+        return not off(px, py) and ui_hole(px // 4, py // 8)
+    if hole(x, y):
+        return None
+    if any(hole(x + dx, y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+        return BLACK                    # a dark gap around every window
+    # bolts
+    for bx, by in BOLTS:
+        if bx <= x <= bx + 1 and by <= y <= by + 1:
+            return LGREY if (x, y) == (bx, by) else DGREY
+    # vent slots on the bar between the view and the map
+    if 86 <= x <= 89 and 60 <= y < 100:
+        if y % 4 == 0:
+            return BLACK
+        if y % 4 == 1:
+            return DGREY
+    # hazard stripes on the bar under the view
+    if 28 <= x <= 59 and 154 <= y <= 158:
+        return YELLOW if ((2 * x + y) // 4) % 2 == 0 else BLACK
+    # bevels: faces that look up or left catch the light, down or right are in shade
+    if off(x, y + 1) or off(x + 1, y) or hole(x, y + 2) or hole(x + 2, y):
+        return DGREY
+    if off(x, y - 1) or off(x - 1, y) or hole(x, y - 2) or hole(x - 2, y):
+        return LGREY
+    return GREY
+
+BOLTS = ([(x, 2) for x in (9, 25, 41, 57, 73)] +              # the bar over the view
+         [(x, 155) for x in (9, 21, 66, 78, 100, 116, 132, 148)] +   # the bar under it all
+         [(1, y) for y in (30, 70, 110, 140)] +                # left
+         [(87, y) for y in (20, 40, 115, 140)] +               # the middle bar
+         [(157, y) for y in (30, 70, 110, 140)] +              # right
+         [(x, 19) for x in (96, 148)])                         # over the map
+
+def paint_ui():
+    sheet = Image.new('RGB', (UW * 2, UH), MAGENTA)
+    px = sheet.load()
+    for y in range(UH):
+        for x in range(UW):
+            col = ui_pixel(x, y)
+            if col is not None:
+                px[2 * x, y] = PAL[col]
+                px[2 * x + 1, y] = PAL[col]
+    sheet.save(FRAME_PNG)
+    print('painted', FRAME_PNG)
+
 # ---------------------------------------------------------------- converting
 def nearest(rgb):
     return min(range(16), key=lambda i: sum((a - b) ** 2 for a, b in zip(rgb, PAL[i])))
 
-def convert():
-    sheet = Image.open(PNG).convert('RGB')
-    px = sheet.load()
-    cache = {}
-    def colour(sx, sy):
-        rgb = px[sx, sy]
-        if rgb not in cache:
-            cache[rgb] = nearest(rgb)
-        return cache[rgb]
-    patterns, pat_index = [], {}
-    squeezed = 0
+class Cells:
+    """8 x 8 cells -> 4-colour patterns: black, two in the screen byte, one ink"""
+    def __init__(self, path):
+        self.img = Image.open(path).convert('RGB')
+        self.px = self.img.load()
+        self.cache = {}
+        self.squeezed = 0
+        self.patterns, self.index = [], {}
+
+    def colour(self, sx, sy):
+        rgb = self.px[sx, sy]
+        if rgb not in self.cache:
+            self.cache[rgb] = nearest(rgb)
+        return self.cache[rgb]
+
+    def cell(self, ox, oy, ink_pref=None):
+        """the cell at sheet pixel (ox, oy) -> (pattern number, screen byte, ink)"""
+        pix = [[self.colour(ox + 2 * fx, oy + fy) for fx in range(4)] for fy in range(8)]
+        counts = {}
+        for row in pix:
+            for col in row:
+                if col != BLACK:
+                    counts[col] = counts.get(col, 0) + 1
+        order = sorted(counts, key=lambda k: -counts[k])
+        if len(order) > 3:
+            self.squeezed += 1
+            keep = order[:3]
+            remap = {k: min(keep, key=lambda q: sum((a - b) ** 2 for a, b in zip(PAL[k], PAL[q]))) for k in order[3:]}
+            pix = [[remap.get(col, col) for col in row] for row in pix]
+            order = keep
+        ink = ink_pref if ink_pref in order else (order[0] if order else BLACK)
+        others = [k for k in order if k != ink]
+        hi = others[0] if len(others) > 0 else BLACK
+        lo = others[1] if len(others) > 1 else BLACK
+        bits = {hi: 1, lo: 2, ink: 3}
+        pat = []
+        for row in pix:
+            b = 0
+            for fx, col in enumerate(row):
+                v = 0 if col == BLACK else bits[col]
+                b |= v << (6 - 2 * fx)
+            pat.append(b)
+        pat = tuple(pat)
+        if pat not in self.index:
+            self.index[pat] = len(self.patterns)
+            self.patterns.append(pat)
+        return self.index[pat], (hi << 4) | lo, ink
+
+def write_bytes(w, label, vals):
+    w(label + ':')
+    if not vals:
+        w('        .byte 0')
+    for j in range(0, len(vals), 20):
+        w('        .byte ' + ', '.join(str(v) for v in vals[j:j + 20]))
+
+def convert_view():
+    cv = Cells(PNG)
+    combos, combo_index = [], {}
+    def combo(scr, depth):
+        key = (scr, depth)
+        if key not in combo_index:
+            combo_index[key] = len(combos)
+            combos.append(key)
+        return combo_index[key]
     out_frames = []
     for i, (name, cells, depth, ink_pref) in enumerate(FRAMES):
         ox, oy = (i % COLS) * FW * 2, (i // COLS) * FH
         recs = []
         for c, r in cells:
-            pix = [[colour(ox + 2 * (c * 4 + fx), oy + r * 8 + fy) for fx in range(4)] for fy in range(8)]
-            counts = {}
-            for row in pix:
-                for col in row:
-                    if col != BLACK:
-                        counts[col] = counts.get(col, 0) + 1
-            order = sorted(counts, key=lambda k: -counts[k])
-            if len(order) > 3:
-                squeezed += 1
-                keep = order[:3]
-                remap = {k: min(keep, key=lambda q: sum((a - b) ** 2 for a, b in zip(PAL[k], PAL[q]))) for k in order[3:]}
-                pix = [[remap.get(col, col) for col in row] for row in pix]
-                order = keep
-            if ink_pref in order:
-                ink = ink_pref
-            else:
-                ink = order[0] if order else BLACK
-            others = [k for k in order if k != ink]
-            hi = others[0] if len(others) > 0 else BLACK
-            lo = others[1] if len(others) > 1 else BLACK
-            bits = {BLACK: 0, hi: 1, lo: 2, ink: 3}
-            if hi == BLACK: bits[BLACK] = 0
-            pat = []
-            for row in pix:
-                b = 0
-                for fx, col in enumerate(row):
-                    v = 0 if col == BLACK else bits[col]
-                    b |= v << (6 - 2 * fx)
-                pat.append(b)
-            pat = tuple(pat)
-            if pat not in pat_index:
-                pat_index[pat] = len(patterns)
-                patterns.append(pat)
-            recs.append((r * VW + c, pat_index[pat], (hi << 4) | lo, ink))
-        out_frames.append(recs)
-
+            pat, scr, ink = cv.cell(ox + 2 * c * 4, oy + r * 8, ink_pref)
+            d = row_depth(r) if depth is None else depth
+            recs.append((r * VW + c, pat, combo(scr, d), ink | (d << 4)))
+        out_frames.append(sorted(recs))
+    n = len(cv.patterns)
+    if n > 512:
+        sys.exit('art: %d different patterns, the engine takes 512 at most' % n)
+    if len(combos) > 256:
+        sys.exit('art: %d colour combinations, the engine takes 256 at most' % len(combos))
+    n1 = max(1, n - 256)
     L = []
     w = L.append
     w('// GENERATED by tools/art.py convert from art/view.png - edit the PNG (or the painter), not this')
     w('.const NPIECES = %d' % len(PIECES))
-    w('art_patterns:')
-    for p in patterns:
-        w('        .byte ' + ', '.join('$%02x' % b for b in p))
-    def bytes_(label, vals):
-        w(label + ':')
-        for j in range(0, len(vals), 20):
-            w('        .byte ' + ', '.join(str(v) for v in vals[j:j + 20]))
-    def patlist(var, recs):
-        w('.var %s = List()' % var)
-        for j in range(0, len(recs), 40):
-            w('.eval %s.add(%s)' % (var, ', '.join(str(rec[1]) for rec in recs[j:j + 40])))
-    # the background: all 400 cells, in order
-    bg = sorted(out_frames[0])
-    patlist('PAT_BG', bg)
-    w('bg_l: .fill %d, <(art_patterns + 8*PAT_BG.get(i))' % len(bg))
-    w('bg_h: .fill %d, >(art_patterns + 8*PAT_BG.get(i))' % len(bg))
-    bytes_('bg_s', [rec[2] for rec in bg])
-    bytes_('bg_k', [rec[3] for rec in bg])
-    bytes_('bg_depth', [row_depth(rec[0] // VW) for rec in bg])
-    for n, recs in enumerate(out_frames[1:]):
-        patlist('PAT_%d' % n, recs)
-        bytes_('pofs_lo_%d' % n, [rec[0] & 255 for rec in recs])
-        bytes_('pofs_hi_%d' % n, [rec[0] >> 8 for rec in recs])
-        w('ppl_%d: .fill %d, <(art_patterns + 8*PAT_%d.get(i))' % (n, len(recs), n))
-        w('pph_%d: .fill %d, >(art_patterns + 8*PAT_%d.get(i))' % (n, len(recs), n))
-        bytes_('pscr_%d' % n, [rec[2] for rec in recs])
-        bytes_('pink_%d' % n, [rec[3] for rec in recs])
+    w('.const NCOMBO = %d' % len(combos))
+    w('.const PAT1_N = %d          // the plane length of patterns 256 on' % n1)
+    w('// the patterns as 8 planes: byte b of pattern p is at patN + b*len + (p & 255)')
+    w('.align $100')
+    w('pat0:')
+    for b in range(8):
+        vals = [cv.patterns[p][b] for p in range(min(n, 256))]
+        vals += [0] * (256 - len(vals))
+        write_bytes(w, 'pat0_%d' % b, vals)
+    w('pat1:')
+    for b in range(8):
+        vals = [cv.patterns[p][b] for p in range(256, n)] or [0]
+        write_bytes(w, 'pat1_%d' % b, vals)
+    write_bytes(w, 'combo_s', [s for s, d in combos])
+    write_bytes(w, 'combo_d', [d for s, d in combos])
+    bg = out_frames[0]
+    write_bytes(w, 'bg_l', [rec[1] & 255 for rec in bg])
+    write_bytes(w, 'bg_h', [rec[1] >> 8 for rec in bg])
+    write_bytes(w, 'bg_s', [rec[2] for rec in bg])
+    write_bytes(w, 'bg_k', [rec[3] for rec in bg])
+    for k, recs in enumerate(out_frames[1:]):
+        write_bytes(w, 'pofs_%d' % k, [rec[0] & 255 for rec in recs])
+        write_bytes(w, 'ppl_%d' % k, [rec[1] & 255 for rec in recs])
+        write_bytes(w, 'pph_%d' % k, [rec[1] >> 8 for rec in recs])
+        write_bytes(w, 'pscr_%d' % k, [rec[2] for rec in recs])
+        write_bytes(w, 'pink_%d' % k, [rec[3] for rec in recs])
     N = len(PIECES)
     def table(label, fmt):
-        w(label + ': .byte ' + ', '.join(fmt % n for n in range(N)))
+        w(label + ': .byte ' + ', '.join(fmt % k for k in range(N)))
     w('p_count: .byte ' + ', '.join(str(len(r)) for r in out_frames[1:]))
-    for lab, arr in (('pa', 'pofs_lo_'), ('pb', 'pofs_hi_'), ('pc', 'ppl_'), ('pe', 'pph_'), ('pf', 'pscr_'), ('pd', 'pink_')):
+    w('p_nlo: .byte ' + ', '.join(str(sum(1 for rec in r if rec[0] < 256)) for r in out_frames[1:]))
+    for lab, arr in (('pa', 'pofs_'), ('pc', 'ppl_'), ('pe', 'pph_'), ('pf', 'pscr_'), ('pd', 'pink_')):
         table(lab + '_lo', '<' + arr + '%d')
         table(lab + '_hi', '>' + arr + '%d')
     w('piece_depth: .byte ' + ', '.join(str(p[2]) for p in PIECES))
@@ -333,14 +431,50 @@ def convert():
     with open(OUT, 'w') as f:
         f.write('\n'.join(L) + '\n')
     cells = sum(len(r) for r in out_frames)
-    print('art: %d cells, %d different patterns (%d bytes), %d cells squeezed to 3 colours'
-          % (cells, len(patterns), len(patterns) * 8, squeezed))
+    print('view art: %d cells, %d different patterns, %d colour combinations, %d cells squeezed to 3 colours'
+          % (cells, n, len(combos), cv.squeezed))
+
+def convert_ui():
+    cv = Cells(FRAME_PNG)
+    recs = []
+    for cy in range(SH):
+        for cx in range(SW):
+            if ui_hole(cx, cy):
+                continue
+            pat, scr, ink = cv.cell(cx * 8, cy * 8)
+            recs.append((cy, cx, pat, scr, ink))
+    L = []
+    w = L.append
+    w('// GENERATED by tools/art.py convert from art/frame.png - edit the PNG (or the painter), not this')
+    w('.const NFRAME = %d' % len(recs))
+    w('frame_patterns:')
+    for p in cv.patterns:
+        w('        .byte ' + ', '.join('$%02x' % b for b in p))
+    write_bytes(w, 'fr_row', [r[0] for r in recs])
+    write_bytes(w, 'fr_col', [r[1] for r in recs])
+    w('fr_pl: .byte ' + ', '.join('<(frame_patterns + %d)' % (8 * r[2]) for r in recs))
+    w('fr_ph: .byte ' + ', '.join('>(frame_patterns + %d)' % (8 * r[2]) for r in recs))
+    write_bytes(w, 'fr_scr', [r[3] for r in recs])
+    write_bytes(w, 'fr_ink', [r[4] for r in recs])
+    with open(FRAME_OUT, 'w') as f:
+        f.write('\n'.join(L) + '\n')
+    print('frame art: %d cells, %d different patterns, %d cells squeezed to 3 colours'
+          % (len(recs), len(cv.patterns), cv.squeezed))
+
+USAGE = """usage:
+  python tools/art.py convert       both PNGs -> src/gen (build.bat runs this)
+  python tools/art.py paint view    paint art/view.png from code (OVERWRITES your edits!)
+  python tools/art.py paint frame   paint art/frame.png from code (OVERWRITES your edits!)"""
 
 if __name__ == '__main__':
-    cmd = sys.argv[1] if len(sys.argv) > 1 else ''
-    if cmd == 'paint':
-        paint()
-    elif cmd == 'convert':
-        convert()
+    cmd = sys.argv[1:]
+    if cmd == ['paint', 'view']:
+        paint_view()
+    elif cmd == ['paint', 'frame']:
+        paint_ui()
+    elif cmd == ['convert']:
+        convert_view()
+        convert_ui()
     else:
         print(__doc__)
+        print(USAGE)

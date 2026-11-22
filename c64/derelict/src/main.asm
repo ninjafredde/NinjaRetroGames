@@ -13,43 +13,46 @@
 //               -define FIGHTTEST  a fight on every step
 //               -define NOFIGHTS   no fights at all
 //               -define DECK2      start on deck 2
+//               -define TIMING     frames per redraw, at the right edge of the log
 
 .encoding "screencode_upper"
 
 #import "map.asm"
 #import "monsters.asm"
 
-// VIC bank 3 (see screen.asm)
-.const SCREEN  = $c000
+// the screen (see screen.asm): two copies of the bitmap part, A in VIC bank 3, B in bank 2
+.const SCREEN  = $c000          // screen A (+ the text rows)
+.const SCREEN_B = $8000         // screen B
 .const COLRAM  = $d800
 .const BITMAP  = $e000
+.const BITMAP_B = $a000
 .const CHARSET = $c800          // the text rows' letters (from the ROM)
-.const MON_SPRITES  = $c400     // the monster sprites (12)
-.const ITEM_SPRITES = $cc00     // the item sprites (6)
-.const SPLIT_LINE = 51 + 8*20 - 3       // the interrupt just before text row 20
-.const TOP_LINE   = 8                   // ... and back to bitmap above the picture
+.const MON_SPRITES  = $c400     // the monster sprites (and a copy at $8400)
+.const ITEM_SPRITES = $cc00     // the item sprites (and a copy at $8c00)
 .const MINI_ROW   = 3           // the minimap's top-left cell (in the bitmap)
 .const MINI_COL   = 23
-// work memory
-// the view is drawn into these (one byte per cell each), then shown by present:
-.const BUFL    = $8000          // the cell's pattern (address low)
-.const BUFK    = $8200          // its ink
-.const BUFH    = $9000          // its pattern (address high)
-.const BUFS    = $9200          // its screen byte (two more colours)
-.const BUFD    = $8400          // the view's depth per cell (for the fog)
+// work memory ($8800-$8bff and $9000-$9fff: in bank 2, but the VIC never shows them)
 .const SEEN    = $8800          // 1 = a map cell you have seen (minimap)
 .label map     = $8900          // this deck: 0 floor, 1 wall, 2 door, 3 locked door
 .label special = $8a00          // this deck: notes, items, hatch, end (see map.asm)
-.const SCRTAB  = $9400          // 4 pages: a screen byte as the fog leaves it, at depth 0-3
-.const INKTAB  = $9800          // 64: an ink at depth 0-3 (deck colours + fog)
+// the view is drawn into these (one byte per cell each), then shown by present:
+.const BUFL    = $9000          // the cell's pattern (low 8 bits)
+.const BUFH    = $9200          // ... which 256 of them (0/1), or $80: the background's
+.const BUFS    = $9400          // its screen byte (two colours), as a colour combination
+.const BUFK    = $9600          // its ink + depth * 16
+.const CSH     = $9800          // present: the view's inks, until the flip puts them on screen
+.const SSH     = $9a00          // present: the view's screen bytes
+.const INKTAB  = $9c00          // 64: ink + depth*16 -> its colour (deck colours + fog)
+.const SCRT    = $9d00          // a colour combination -> its screen byte (deck + fog)
 .const LOG     = SCREEN + 22*40 + 1 // the 3 log lines (38 wide)
 .const LOG_W   = 38
 .const VX      = 1              // the view's top-left on the screen
 .const VY      = 0
+.const VIEW_R0 = 1              // the rows of it on screen (0 and 19 are under the frame)
+.const NSHOW   = 18
 
 .const COL_FLOOR = 9            // brown deck plates
 .const COL_CEIL  = 11           // dark grey
-.const COL_FRAME = 6
 .const COL_TEXT  = 15
 .const COL_TITLE = 7
 
@@ -93,7 +96,6 @@
 .label bonus   = $2e            // + hit for the whole crew
 .label kind    = $2f            // the cell being drawn: 1 wall, 2 door, 3 locked
 .label ovr     = $30            // blit: draw in this colour instead (0: the piece's own)
-.label zp3     = $31            // 2: blit's depth pointer
 .label fogtab  = $33            // 4: this deck's fog level at depth 0-3
 .label fog_floor = $37
 .label fog_ceil  = $38
@@ -113,22 +115,18 @@
 .label tp      = $48            // 2: text
 .label prev_pos = $4a
 .label view_scr = $4b           // floor << 4 | ceiling
-.label bc      = $4c            // 2: present's pointers
-.label bk      = $4e            // 2
 .label sr      = $50            // 2
-.label crp     = $52            // 2
-.label pcol    = $54
 .label mi      = $55
-.label prow    = $56
 .label bty     = $57
-.label zp4     = $58            // 2: blit's pattern-high pointer
-.label zp5     = $5a            // 2: blit's screen-byte pointer
-.label bh      = $5c            // 2: present's pointers
-.label bs      = $5e            // 2
-.label bd      = $60            // 2
-.label stp     = $62            // 2: present: this cell's SCRTAB page
-.label ib      = $64            // present: depth * 16
 .label d16     = $65
+.label dpb     = $70            // 16: present: the 8 bitmap pointers of this row
+.label rowa    = $80            // 2: present: the row's bitmap address
+.label rowend  = $82
+.label ci      = $83
+.label shown   = $84            // the copy on screen: 0 A, 1 B
+.label flip_req = $85           // 1: the hidden copy is ready, flip to it
+.label bend    = $86
+.label frx     = $87
 
 .macro Print(dest, src, col) {
         ldx #0
@@ -324,7 +322,14 @@ moved:
 
 show_all:
         jsr mark_seen
+#if TIMING
+        lda frames
+        sta $67
+#endif
         jsr render
+#if TIMING
+        jsr timing
+#endif
         jsr show_item
         ldx prev_pos            // the minimap: where you were, where you are
         jsr mini_cell
@@ -332,6 +337,23 @@ show_all:
         stx prev_pos
         jsr mini_cell
         jmp status
+
+#if TIMING
+// how many frames render took: last on row 23, most so far on row 24 (right edge)
+timing: lda frames
+        sec
+        sbc $67
+        sta $68
+        ora #$30
+        sta SCREEN + 23*40 + 39
+        lda $68
+        cmp $69
+        bcc !+
+        sta $69
+        ora #$30
+        sta SCREEN + 24*40 + 39
+!:      rts
+#endif
 
 // ---------------------------------------------------------------- input
 // A = 0 nothing, 1 forward, 2 back, 3 left, 4 right, 5 medkit
@@ -456,7 +478,7 @@ status:
         lda keys
         clc
         adc #48
-        sta STATUS + 38
+        sta STATUS + 37
         rts
 
 // ---------------------------------------------------------------- the log
@@ -567,113 +589,106 @@ fog_colour:
 !:      rts
 
 // ---------------------------------------------------------------- the view
+// every cell starts as the background (BUFH $80: present takes it from bg_*), then the
+// pieces go on far to near
 render:
-        ldx #0                  // the background, then the pieces far to near
-!:      .for (var h=0; h<2; h++) {
-            lda bg_l + h*200,x
-            sta BUFL + h*200,x
-            lda bg_h + h*200,x
-            sta BUFH + h*200,x
-            lda bg_s + h*200,x
-            sta BUFS + h*200,x
-            lda bg_k + h*200,x
-            sta BUFK + h*200,x
-            lda bg_depth + h*200,x
-            sta BUFD + h*200,x
-        }
+        lda #$80
+        ldx #0
+!:      sta BUFH,x
+        sta BUFH + VW*VH/2,x
         inx
-        cpx #200
+        cpx #VW*VH/2
         bne !-
         Depth(2)
         Depth(1)
         Depth(0)
         jmp present
 
-// A = piece number: write its cells into the buffers
+// A = piece number: write its cells into the buffers. Its cells come sorted by where
+// they go: first those in the buffers' first page, then the second.
 blit:
         tax
         lda ovr                 // one colour for all of it?
         beq b_own
+        lda piece_depth,x
+        asl
+        asl
+        asl
+        asl
+        ora ovr
         sta s4+1
         lda #$a9                // s4 becomes: lda #ovr / nop
         sta s4
         lda #$ea
         sta s4+2
         bne b_go
-b_own:  lda #$bd                // s4: lda the piece's colours,x
+b_own:  lda #$bd                // s4: lda the piece's inks,x
         sta s4
         lda pd_lo,x
         sta s4+1
         lda pd_hi,x
         sta s4+2
-b_go:   lda p_count,x
+b_go:   lda p_nlo,x
         sta bn+1
+        lda p_count,x
+        sta bend
         lda pa_lo,x
         sta s1+1
         lda pa_hi,x
         sta s1+2
-        lda pb_lo,x
-        sta s2+1
-        lda pb_hi,x
-        sta s2+2
         lda pc_lo,x
-        sta s3+1
+        sta s2+1
         lda pc_hi,x
-        sta s3+2
+        sta s2+2
         lda pe_lo,x
-        sta s6+1
+        sta s3+1
         lda pe_hi,x
-        sta s6+2
+        sta s3+2
         lda pf_lo,x
         sta s5+1
         lda pf_hi,x
         sta s5+2
-        lda piece_depth,x
-        sta dv+1
+        lda #>BUFL
+        sta d1+2
+        lda #>BUFH
+        sta d2+2
+        lda #>BUFS
+        sta d3+2
+        lda #>BUFK
+        sta d4+2
         ldx #0
 bl:
-s1:     lda $ffff,x             // where (low)
-        sta zp
-        sta zp2
-        sta zp3
-        sta zp4
-        sta zp5
-s2:     lda $ffff,x             // where (high: 0 or 1)
-        tay
-        ora #>BUFL
-        sta zp+1
-        ora #>BUFK
-        sta zp2+1
-        tya
-        ora #>BUFD
-        sta zp3+1
-        tya
-        ora #>BUFH
-        sta zp4+1
-        ora #>BUFS
-        sta zp5+1
-        ldy #0
-s3:     lda $ffff,x             // pattern low
-        sta (zp),y
-s6:     lda $ffff,x             // pattern high
-        sta (zp4),y
-s5:     lda $ffff,x             // screen byte
-        sta (zp5),y
-s4:     lda $ffff,x             // ink (or one colour for all: ovr)
-        sta (zp2),y
-dv:     lda #0                  // depth
-        sta (zp3),y
+bn:     cpx #0                  // the end of this page's cells
+        beq b_page
+s1:     ldy $ffff,x             // where
+s2:     lda $ffff,x             // pattern (low 8 bits)
+d1:     sta BUFL,y
+s3:     lda $ffff,x             // which 256
+d2:     sta BUFH,y
+s5:     lda $ffff,x             // screen byte (colour combination)
+d3:     sta BUFS,y
+s4:     lda $ffff,x             // ink + depth (or one colour for all: ovr)
+d4:     sta BUFK,y
         inx
-bn:     cpx #0
         bne bl
-        rts
+b_page: lda d1+2
+        cmp #>BUFL
+        bne b_done
+        inc d1+2                // the second page
+        inc d2+2
+        inc d3+2
+        inc d4+2
+        lda bend
+        sta bn+1
+        jmp bl
+b_done: rts
 
 // ---------------------------------------------------------------- tables
 txt_title1: .text "WASTE OF SPACE"
             .byte 0
 txt_title2: .text "   DERELICT"
             .byte 0
-txt_status: .text "DECK    FACING        MEDKITS    KEYS  "
+txt_status: .text "DECK    FACING        MEDKITS   KEYS  "
             .byte 0
 txt_wake:   .text "YOU WAKE UP ON A DEAD SHIP. ALONE..."
             .byte 0
@@ -709,4 +724,5 @@ mon_sprite_data:
 item_sprite_data:
 .for (var n=0; n<NITEM_PICS; n++) ItemSprite(ITEM_PICS.get(n))
 
-.errorif * > BUFL, "the program runs into the work memory at $8000"
+.errorif * > SCREEN_B, "the program runs into screen B at $8000"
+.errorif NMON*4*64 > $400, "too many monster sprites for $c400-$c7ff"

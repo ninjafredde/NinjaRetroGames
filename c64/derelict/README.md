@@ -64,15 +64,27 @@ Fog (22 Nov): dithered distance fog per deck (light on deck 1, heavy on deck 2).
 ## Bitmap branch (work in progress)
 `git checkout bitmap`. The screen is split by a raster interrupt (`src/screen.asm`):
 multicolour bitmap on top (view, title, pixel minimap), text below (crew, status, log).
-VIC bank 3: screen $c000, sprites $c400/$cc00, letters $c800, bitmap $e000; work memory $8000.
+The bitmap part is double buffered: copy A in VIC bank 3 (screen $c000, sprites
+$c400/$cc00, bitmap $e000), copy B in bank 2 at the same places minus $4000. Text rows
+(letters $c800) always come from bank 3. Work memory: $8800-$8bff, $9000-$9fff.
 - M1 (done): the split screen; the view's cell codes turned into 4x8 fat-pixel patterns
   (`FAT` in `src/view.asm`), so it looks like the text version, in bitmap.
 - M2 (done): the view is painted art. `tools/art.py paint` paints `art/view.png` from code
   (a sheet of 18 frames: background + 17 pieces, C64 colours, dithered light);
   `tools/art.py convert` (run by build.bat) turns it into `src/gen/view_art.asm`
   (8x8 cells, 3 colours + black each, repeats shared). Repaint the PNG in any editor:
-  keep the C64 colours, at most 3 + black per 8x8 cell (2-wide pixels). Running `paint`
-  again OVERWRITES the PNG.
+  keep the C64 colours, at most 3 + black per 8x8 cell (2-wide pixels). Running
+  `paint view` again OVERWRITES the PNG.
   Per deck: `DECK_REMAP` (the art's colours on that deck) and `DECK_FOG` (darker by depth)
   in `src/map.asm`, applied through colour tables when a deck loads.
-- M3: faster drawing (it takes ~5 frames now: a visible wipe), polish.
+- M3 (done): the frame and speed.
+  - `art/frame.png` (320 x 160, the top 20 rows; magenta = the holes the program draws:
+    view, minimap, title) is converted with the view and drawn once at start, into both
+    copies. `tools/art.py paint frame` repaints it from code (OVERWRITES the PNG).
+    The text rows get rails down both sides (characters 112-115, `rail_chars` in screen.asm).
+  - The view shows its rows 1-18 (0 and 19 are under the frame's bars).
+  - A step redraws in 4 frames (was 8), into the hidden copy; the interrupt flips to it
+    below the view and copies the view's colours to colour RAM then, so no wipe.
+    How: patterns stored as 8 byte planes, depth baked into the colours, the background
+    read straight from its tables instead of copied, the blit's cells sorted by page.
+  - `-define TIMING`: frames per redraw at the right edge of the log (last, most).

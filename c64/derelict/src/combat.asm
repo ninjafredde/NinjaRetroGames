@@ -18,7 +18,8 @@
 .const REGEN_STEPS  = 6         // every so many steps, everyone up gets 1 HP back
 .const PAUSE        = 40        // frames between fight lines (hold fire: faster)
 
-.const SPRPTR = SCREEN + $3f8
+.const SPRPTR = SCREEN + $3f8          // the sprite pointers, in both screens
+.const SPRPTR_B = SCREEN_B + $3f8
 .const MON_X  = 64              // the monster's top-left sprite position
 .const MON_Y  = 108
 
@@ -398,13 +399,17 @@ show_monster:
         ldx mtype
         lda mon_frame,x
         sta SPRPTR
+        sta SPRPTR_B
         clc
         adc #1
         sta SPRPTR+1
+        sta SPRPTR_B+1
         adc #1
         sta SPRPTR+2
+        sta SPRPTR_B+2
         adc #1
         sta SPRPTR+3
+        sta SPRPTR_B+3
         jsr mon_colour
         lda #$0f
         sta $d015
@@ -533,7 +538,7 @@ draw_party:
             bpl !-
             ldx #m
             jsr crew_colour
-            ldx #12
+            ldx #11
 !:          sta COLRAM + 20*40 + 1 + m*13,x
             dex
             bpl !-
@@ -546,9 +551,8 @@ draw_party:
             lda #32             // (the colour says how hurt)
             sta SCREEN + 20*40 + 1 + m*13 + 10
             sta SCREEN + 20*40 + 1 + m*13 + 11
-            sta SCREEN + 20*40 + 1 + m*13 + 12
             jmp next
-down:       ldx #4
+down:       ldx #3
 !:          lda txt_down,x
             sta SCREEN + 20*40 + 1 + m*13 + 8,x
             dex

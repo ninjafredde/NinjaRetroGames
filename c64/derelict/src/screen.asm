@@ -1,19 +1,31 @@
-// The split screen: multicolour bitmap on top (rows 0-19: the view, the title, the
-// minimap), ordinary text below (rows 20-24: crew, status, log). A raster interrupt
-// switches the mode at row 20 and back at the top of every frame.
+// The split screen: multicolour bitmap on top (rows 0-19: the frame, the view, the
+// title, the minimap), ordinary text below (rows 20-24: crew, status, log). A raster
+// interrupt switches the mode at row 20 and back at the top of every frame.
 //
-// VIC bank 3 ($c000-$ffff):
-//   $c000  screen matrix: bitmap colours in rows 0-19, characters in rows 20-24
-//   $c400  monster sprites (copied there at start)
-//   $c800  the character set for the text rows (copied from the ROM)
-//   $cc00  item sprites
-//   $e000  the bitmap (RAM under the KERNAL ROM: the VIC sees RAM, the CPU writes RAM)
+// The bitmap part is double buffered: two copies, A in VIC bank 3 and B in bank 2, laid
+// out the same way 16K apart. The view is drawn into the one not on screen, and the
+// interrupt flips to it below the view (and copies the view's colours into colour RAM,
+// which there is only one of). The text rows always come from bank 3.
+//
+//   bank 3 (A)                         bank 2 (B)
+//   $c000  screen A + the text rows    $8000  screen B
+//   $c400  monster sprites             $8400  monster sprites (a copy)
+//   $c800  the text rows' characters   $8800  (work memory: the VIC never looks here)
+//   $cc00  item sprites                $8c00  item sprites (a copy)
+//   $e000  bitmap A (under the KERNAL) $a000  bitmap B (under BASIC)
 //
 // A bitmap cell (8 x 8 pixels, 4 fat pixels wide) shows 4 colours: pixel value
-// 00 black ($d021), 01 the screen byte's high nibble (floor), 10 its low nibble
-// (ceiling), 11 the cell's colour RAM (the "ink"). The view is still drawn as a grid
-// of codes + inks (BUFC/BUFK); present turns every code into an 8-byte pattern.
+// 00 black ($d021), 01 the screen byte's high nibble, 10 its low nibble, 11 the cell's
+// colour RAM (the "ink").
 
+.const SPLIT_LINE = 51 + 8*20 - 3       // the interrupt just before text row 20
+.const TOP_LINE   = 8                   // ... and back to bitmap above the picture
+.const BANK_B     = $4000               // copy B is this much lower than copy A
+.const RAIL       = 112                 // the rails' characters (4)
+.const RAIL_CHARS = 4
+.const COL_RAIL   = 12
+
+#import "gen/frame_art.asm"             // the frame (art/frame.png)
 
 // ---------------------------------------------------------------- set up
 screen_init:
@@ -38,6 +50,8 @@ screen_init:
         sta $d018
         lda #0
         sta irq_top
+        sta shown
+        sta flip_req
         lda #1
         sta $d01a
         lda #$33                // the ROM characters -> $c800 (128 of them)
@@ -52,33 +66,43 @@ screen_init:
         lda #$37
         sta $01
         cli
-        // the sprites
+        ldx #RAIL_CHARS*8-1     // the rails down the sides of the text rows
+!:      lda rail_chars,x
+        sta CHARSET + RAIL*8,x
+        dex
+        bpl !-
+        // the sprites, in both banks
         Copy(mon_sprite_data, MON_SPRITES, NMON*4*64)
         Copy(item_sprite_data, ITEM_SPRITES, NITEM_PICS*64)
-        // clear the bitmap, the screen and the colours; text rows: spaces
+        Copy(mon_sprite_data, MON_SPRITES - BANK_B, NMON*4*64)
+        Copy(item_sprite_data, ITEM_SPRITES - BANK_B, NITEM_PICS*64)
+        // clear both bitmaps, both screens and the colours; text rows: spaces
         lda #<BITMAP
         sta dp
         lda #>BITMAP
         sta dp+1
+        lda #<BITMAP_B
+        sta pp
+        lda #>BITMAP_B
+        sta pp+1
         ldx #32
         lda #0
         tay
 !:      sta (dp),y
+        sta (pp),y
         iny
         bne !-
         inc dp+1
+        inc pp+1
         dex
         bne !-
         ldx #0
         lda #0
-!:      sta SCREEN,x
-        sta SCREEN+$100,x
-        sta SCREEN+$200,x
-        sta SCREEN+$300,x
-        sta COLRAM,x
-        sta COLRAM+$100,x
-        sta COLRAM+$200,x
-        sta COLRAM+$300,x
+!:      .for (var p=0; p<4; p++) {
+            sta SCREEN + p*$100,x
+            sta SCREEN_B + p*$100,x
+            sta COLRAM + p*$100,x
+        }
         inx
         bne !-
         ldx #0                  // the text rows: spaces
@@ -89,6 +113,15 @@ screen_init:
         inx
         cpx #5*40
         bne !-
+        .for (var r=20; r<25; r++) {
+            lda #RAIL + (r & 1)
+            sta SCREEN + r*40
+            lda #RAIL + 2 + (r & 1)
+            sta SCREEN + r*40 + 39
+            lda #COL_RAIL
+            sta COLRAM + r*40
+            sta COLRAM + r*40 + 39
+        }
         rts
 
 // Copy(src, dst, bytes): a straight copy at start
@@ -113,38 +146,76 @@ screen_init:
         bne !-
 }
 
+// the rails (hi-res characters): left, left with a bolt, right, right with a bolt
+rail_chars:
+        .byte $fc, $fc, $fc, $fc, $fc, $fc, $fc, $fc
+        .byte $fc, $fc, $fc, $cc, $cc, $fc, $fc, $fc
+        .byte $3f, $3f, $3f, $3f, $3f, $3f, $3f, $3f
+        .byte $3f, $3f, $3f, $33, $33, $3f, $3f, $3f
+
 // ---------------------------------------------------------------- the interrupt
 irq:
         lda $d019
         sta $d019
         lda irq_top
         bne irq_bitmap
-        lda #SPLIT_LINE + 2     // wait for the first line of text row 20
+        lda $dd00               // bank 3 for the text rows: already on the last line of
+        and #$fc                // the frame's bottom bar (the same in both copies)
+        tax
+        lda #SPLIT_LINE + 2     // wait for that line (210)
 !:      cmp $d012
-        bcs !-
-        lda #$1b                // text
+        bne !-
+        stx $dd00
+        ldx #8                  // ... then to its right border (about cycle 57 of 63)
+!:      dex
+        bne !-
+        lda #$1b                // text, all three switched in the border: line 210's
+        ldx #$02                // right edge and 211's left edge (211 is a badline: the
+        ldy #$08                // VIC stops the CPU from about cycle 12 on)
         sta $d011
-        lda #$08
-        sta $d016
-        lda #$02                // screen $c000, characters $c800
-        sta $d018
+        sty $d016
+        stx $d018               // screen $c000, characters $c800
         lda #TOP_LINE
         sta $d012
         inc irq_top
-        jmp $ea81               // just return
+        lda flip_req            // a new picture is ready: its colours, and show it next
+        beq !+
+        jsr copy_colours
+        lda shown
+        eor #1
+        sta shown
+        lda #0
+        sta flip_req
+!:      jmp $ea81               // just return
 irq_bitmap:
         lda #$3b                // multicolour bitmap
         sta $d011
         lda #$18
         sta $d016
-        lda #$08                // screen $c000, bitmap $e000
+        lda #$08                // screen at +$0000, bitmap at +$2000 (in either bank)
         sta $d018
+        lda $dd00               // bank 3 (A) or 2 (B)
+        and #$fc
+        ora shown
+        sta $dd00
         lda #SPLIT_LINE
         sta $d012
         lda #0
         sta irq_top
         inc frames
         jmp $ea31               // the KERNAL's keyboard scan, then return
+
+// the new picture's colours into colour RAM (called below the view)
+copy_colours:
+        ldx #VW-1
+!:      .for (var r=0; r<NSHOW; r++) {
+            lda CSH + r*VW,x
+            sta COLRAM + (VIEW_R0 + r)*40 + VX,x
+        }
+        dex
+        bmi !+
+        jmp !-
+!:      rts
 
 // wait for the next frame
 frame:
@@ -154,7 +225,8 @@ frame:
         rts
 
 // ---------------------------------------------------------------- drawing cells
-// pat_out: the 8 bytes at pp into bitmap cell (cr, cc), screen byte cscr, ink ccol
+// pat_out: the 8 bytes at pp into bitmap cell (cr, cc) of both copies, screen byte
+// cscr, ink ccol
 pat_out:
         ldx cr
         ldy cc
@@ -170,6 +242,15 @@ pat_out:
         sta (dp),y
         dey
         bpl !-
+        lda dp+1
+        sec
+        sbc #>BANK_B
+        sta dp+1
+        ldy #7
+!:      lda (pp),y
+        sta (dp),y
+        dey
+        bpl !-
         lda scr_lo,x
         sta sr
         lda scr_hi,x
@@ -178,6 +259,12 @@ pat_out:
         lda cscr
         sta (sr),y
         lda sr+1
+        sec
+        sbc #>BANK_B
+        sta sr+1
+        lda cscr
+        sta (sr),y
+        lda scr_hi,x
         clc
         adc #>(COLRAM-SCREEN)
         sta sr+1
@@ -235,140 +322,194 @@ bt:     lda (tp),y
         rts
 
 // ---------------------------------------------------------------- the view on screen
-// every cell: its pattern into the bitmap, its screen byte and ink through this deck's
-// tables for its depth (deck colours, fog)
+// The view's rows 1-18 (row 0 and 19 are under the frame), in two halves of 9 rows so
+// a cell's number fits in X. Each cell: a piece's (BUFH 0/1: which 256 patterns) or the
+// background's (BUFH $80); its screen byte and ink through this deck's tables (deck
+// colours + fog) into SSH / CSH; its 8 pattern bytes straight into the hidden bitmap.
+.const HALF = NSHOW/2*VW                // 180 cells
+
+.macro Copy8(set) {
+        .for (var b=0; b<8; b++) {
+            .if (set == 0) lda pat0 + b*256,x
+            .if (set == 1) lda pat1 + b*PAT1_N,x
+            sta (dpb + b*2),y
+        }
+}
+
 present:
-        lda #<BUFL
-        sta bc
-        lda #>BUFL
-        sta bc+1
-        lda #<BUFH
-        sta bh
-        lda #>BUFH
-        sta bh+1
-        lda #<BUFS
-        sta bs
-        lda #>BUFS
-        sta bs+1
-        lda #<BUFK
-        sta bk
-        lda #>BUFK
-        sta bk+1
-        lda #<BUFD
-        sta bd
-        lda #>BUFD
-        sta bd+1
-        lda #0
-        sta stp
-        lda #<(BITMAP + VX*8)
-        sta dp
-        lda #>(BITMAP + VX*8)
-        sta dp+1
-        lda #<(SCREEN + VY*40 + VX)
-        sta sr
-        lda #>(SCREEN + VY*40 + VX)
-        sta sr+1
-        lda #<(COLRAM + VY*40 + VX)
-        sta crp
-        lda #>(COLRAM + VY*40 + VX)
-        sta crp+1
-        lda #VH
-        sta prow
-pr_row: ldy #0
-pr_cell:
-        sty pcol
-        lda (bc),y
-        sta pp
-        lda (bh),y
-        sta pp+1
-        lda (bd),y              // depth -> its tables
-        tax
-        lda scr_page,x
-        sta stp+1
-        lda ink_base,x
-        sta ib
-        lda (bk),y
-        and #15
-        ora ib
-        tax
-        lda INKTAB,x
-        sta (crp),y
-        lda (bs),y
-        tay
-        lda (stp),y
-        ldy pcol
-        sta (sr),y
-        .for (var b=7; b>=0; b--) {
-            ldy #b
-            lda (pp),y
-            sta (dp),y
+        lda flip_req            // the last one isn't on screen yet: wait
+        bne present
+        lda shown               // draw into the other copy
+        bne pr_toA
+        lda #<(BITMAP_B + VIEW_R0*320 + VX*8)
+        sta rowa
+        lda #>(BITMAP_B + VIEW_R0*320 + VX*8)
+        sta rowa+1
+        jmp pr_go
+pr_toA: lda #<(BITMAP + VIEW_R0*320 + VX*8)
+        sta rowa
+        lda #>(BITMAP + VIEW_R0*320 + VX*8)
+        sta rowa+1
+pr_go:  jsr set_rows
+        .for (var h=0; h<2; h++) {
+            .var o = h*HALF
+            .var vo = VIEW_R0*VW + o
+            Op(o1, BUFH + vo)
+            Op(o6, BUFH + vo)
+            Op(o2, BUFS + vo)
+            Op(o4, BUFK + vo)
+            Op(o7, BUFL + vo)
+            Op(o8, BUFL + vo)
+            Op(o3, SSH + o)
+            Op(o10, SSH + o)
+            Op(o5, CSH + o)
+            Op(o12, CSH + o)
+            Op(o9, bg_s + vo)
+            Op(o11, bg_k + vo)
+            Op(o13, bg_h + vo)
+            Op(o14, bg_l + vo)
+            Op(o15, bg_l + vo)
+            lda #VW
+            sta rowend
+            ldx #0
+            jsr pr_cell
         }
-        lda dp
-        clc
-        adc #8
-        sta dp
-        bcc !+
-        inc dp+1
-!:      ldy pcol
-        iny
-        cpy #VW
-        bne pr_cell
-        .for (var n=0; n<5; n++) {      // next row: the five buffers
-            .var zpv = List().add(bc, bh, bs, bk, bd).get(n)
-            lda zpv
-            clc
-            adc #VW
-            sta zpv
-            bcc !+
-            inc zpv+1
+        lda shown               // the screen bytes into the hidden copy's screen
+        bne pr_scrA
+        CopyScreen(SCREEN_B)
+        jmp pr_flip
+pr_scrA:
+        CopyScreen(SCREEN)
+pr_flip:
+        lda #1                  // show it (the interrupt flips below the view)
+        sta flip_req
+        rts
+
+.macro Op(label, addr) {
+        lda #<addr
+        sta label+1
+        lda #>addr
+        sta label+2
+}
+
+.macro CopyScreen(scr) {
+        ldx #VW-1
+!:      .for (var r=0; r<NSHOW; r++) {
+            lda SSH + r*VW,x
+            sta scr + (VIEW_R0 + r)*40 + VX,x
+        }
+        dex
+        bmi !+
+        jmp !-
 !:
+}
+
+// the 8 bitmap pointers for the row at rowa (rowa's low byte is a multiple of 8)
+set_rows:
+        lda rowa+1
+        .for (var b=0; b<8; b++) sta dpb + b*2 + 1
+        lda rowa
+        sta dpb
+        clc
+        .for (var b=1; b<8; b++) {
+            adc #1
+            sta dpb + b*2
         }
-        lda sr
+        rts
+
+pr_cell:
+o1:     lda $ffff,x             // BUFH
+        bpl !+
+        jmp pr_bg
+!:
+o2:     ldy $ffff,x             // BUFS
+        lda SCRT,y
+o3:     sta $ffff,x             // SSH
+o4:     ldy $ffff,x             // BUFK
+        lda INKTAB,y
+o5:     sta $ffff,x             // CSH
+        ldy col8,x
+        stx ci
+o6:     lda $ffff,x             // BUFH
+        bne pr_p1
+o7:     lda $ffff,x             // BUFL
+        tax
+        Copy8(0)
+        ldx ci
+        jmp pr_next
+pr_p1:
+o8:     lda $ffff,x             // BUFL
+        tax
+        Copy8(1)
+        ldx ci
+        jmp pr_next
+pr_bg:
+o9:     ldy $ffff,x             // bg_s
+        lda SCRT,y
+o10:    sta $ffff,x             // SSH
+o11:    ldy $ffff,x             // bg_k
+        lda INKTAB,y
+o12:    sta $ffff,x             // CSH
+        ldy col8,x
+        stx ci
+o13:    lda $ffff,x             // bg_h
+        bne pr_b1
+o14:    lda $ffff,x             // bg_l
+        tax
+        Copy8(0)
+        ldx ci
+        jmp pr_next
+pr_b1:
+o15:    lda $ffff,x             // bg_l
+        tax
+        Copy8(1)
+        ldx ci
+pr_next:
+        inx
+        cpx rowend
+        beq pr_row
+        jmp pr_cell
+pr_row: lda rowa                // the next row: 320 bytes on
         clc
-        adc #40
-        sta sr
-        bcc !+
-        inc sr+1
-!:      lda crp
-        clc
-        adc #40
-        sta crp
-        bcc !+
-        inc crp+1
-!:      lda dp
-        clc
-        adc #<(320 - VW*8)
-        sta dp
-        lda dp+1
-        adc #>(320 - VW*8)
-        sta dp+1
-        dec prow
+        adc #<320
+        sta rowa
+        lda rowa+1
+        adc #>320
+        sta rowa+1
+        jsr set_rows
+        cpx #HALF
         beq !+
-        jmp pr_row
+        lda rowend
+        clc
+        adc #VW
+        sta rowend
+        jmp pr_cell
 !:      rts
 
-scr_page:   .byte >SCRTAB, >SCRTAB + 1, >SCRTAB + 2, >SCRTAB + 3
-ink_base:   .byte 0, 16, 32, 48
+col8:   .fill HALF, (i - VW*floor(i/VW))*8
 
-// the frame either side of the view, and the title
+// ---------------------------------------------------------------- the frame and the title
+// (art/frame.png, see tools/art.py)
 draw_frame:
-        lda view_scr
+        ldx #0
+!:      stx frx
+        lda fr_row,x
+        sta cr
+        lda fr_col,x
+        sta cc
+        lda fr_scr,x
         sta cscr
-        ldx #VH-1
-!:      stx cr
-        lda #VX-1
-        sta cc
-        lda #G_SOLID
-        ldy #COL_FRAME
-        jsr cell_out
-        lda #VX+VW
-        sta cc
-        lda #G_SOLID
-        ldy #COL_FRAME
-        jsr cell_out
-        ldx cr
-        dex
-        bpl !-
+        lda fr_ink,x
+        sta ccol
+        lda fr_pl,x
+        sta pp
+        lda fr_ph,x
+        sta pp+1
+        jsr pat_out
+        ldx frx
+        inx
+        cpx #NFRAME
+        bne !-
         BmText(txt_title1, 0, MINI_COL, COL_TITLE)
         BmText(txt_title2, 1, MINI_COL, COL_TITLE)
         rts
@@ -459,3 +600,4 @@ fatten: .fill 256, (((i>>6)&3)!=0 ? $c0 : 0) | (((i>>4)&3)!=0 ? $30 : 0) | (((i>
 tmp8:   .fill 8, 0
 mc_lo:  .fill 256, <(mc_patterns + i*8)
 mc_hi:  .fill 256, >(mc_patterns + i*8)
+

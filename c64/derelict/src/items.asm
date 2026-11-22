@@ -63,7 +63,8 @@ ld:     lda (sp),y
         jmp draw_minimap
 
 // the view's colour tables for this deck: INKTAB[depth*16 + c] = c in this deck's colours
-// (DECK_REMAP), dimmed for the fog at that depth; SCRTAB[depth][b] = both nibbles of b so
+// (DECK_REMAP), dimmed for the fog at that depth; SCRT[n] = colour combination n
+// (a screen byte at a depth, from the art) the same way
 build_tabs:
         lda deck
         asl
@@ -98,12 +99,14 @@ bi:     txa
 bi_put: sta INKTAB,x
         dex
         bpl bi
-        lda #>SCRTAB
-        sta bs_w+2
-        lda #0
+        ldx #0
+bs:     lda combo_d,x
+        asl
+        asl
+        asl
+        asl
         sta d16
-bs_d:   ldx #0
-bs_b:   txa
+        lda combo_s,x
         lsr
         lsr
         lsr
@@ -116,22 +119,16 @@ bs_b:   txa
         asl
         asl
         sta t1
-        txa
+        lda combo_s,x
         and #15
         ora d16
         tay
         lda INKTAB,y
         ora t1
-bs_w:   sta SCRTAB,x
+        sta SCRT,x
         inx
-        bne bs_b
-        inc bs_w+2
-        lda d16
-        clc
-        adc #16
-        sta d16
-        cmp #64
-        bne bs_d
+        cpx #NCOMBO
+        bne bs
         rts
 
 // ---------------------------------------------------------------- stepping on a cell
@@ -310,6 +307,7 @@ si_put: sta $d000 + ITEM_SPR*2
         clc
         adc #(ITEM_SPRITES - $c000)/64
         sta SPRPTR + ITEM_SPR
+        sta SPRPTR_B + ITEM_SPR
         lda item_col,x
         ldy si_depth
         jsr fog_colour
