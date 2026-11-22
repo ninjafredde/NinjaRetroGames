@@ -49,11 +49,17 @@ ld:     lda (sp),y
         lda deck_fog+3,y
         sta fogtab+3
         ldx deck
-        txa
-        clc
-        adc #49                 // the deck number in the title
-        sta SCREEN + 1*40 + 38
-        jmp set_dir
+        lda deck_floor,x        // the screen byte: floor high, ceiling low
+        asl
+        asl
+        asl
+        asl
+        ora deck_ceil,x
+        sta view_scr
+        lda pos
+        sta prev_pos
+        jsr set_dir
+        jmp draw_minimap
 
 // ---------------------------------------------------------------- stepping on a cell
 on_cell:
@@ -98,7 +104,6 @@ oc_said:
         ldx item_hi,y
         jsr message
         jsr status
-        jsr draw_minimap
         jmp after_step
 oc_feature:
         cmp #SP_HATCH
@@ -186,9 +191,9 @@ um_heal:
 // sprite 4: whatever lies 1 cell ahead (doubled), or else 2 cells ahead (normal size)
 .const ITEM_SPR = 4
 .const ITEM_X1 = 112 - 24       // one ahead: centred, standing on the floor
-.const ITEM_Y1 = 156
+.const ITEM_Y1 = 148
 .const ITEM_X2 = 112 - 12       // two ahead
-.const ITEM_Y2 = 146
+.const ITEM_Y2 = 138
 show_item:
         Cell(1, 0)
         bne si_none             // a wall or door right ahead
@@ -230,7 +235,7 @@ si_put: sta $d000 + ITEM_SPR*2
         sty $d001 + ITEM_SPR*2
         txa
         clc
-        adc #ITEM_SPRITES/64
+        adc #(ITEM_SPRITES - $c000)/64
         sta SPRPTR + ITEM_SPR
         lda item_col,x
         ldy si_depth

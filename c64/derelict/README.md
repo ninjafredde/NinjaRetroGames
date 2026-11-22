@@ -60,4 +60,12 @@ Test builds: `-define DEMO` walks a scripted route by itself; `-define FIGHTTEST
 Graphics pass 1 (22 Nov): bulkhead panels, door art, floor/ceiling seams, lamps (dead on deck 2),
 items as sprites in the corridor, new Cleanbot.
 Fog (22 Nov): dithered distance fog per deck (light on deck 1, heavy on deck 2).
-Next big step if wanted: a multicolour bitmap view (hand-pixelled pieces, PNG converter).
+
+## Bitmap branch (work in progress)
+`git checkout bitmap`. The screen is split by a raster interrupt (`src/screen.asm`):
+multicolour bitmap on top (view, title, pixel minimap), text below (crew, status, log).
+VIC bank 3: screen $c000, sprites $c400/$cc00, letters $c800, bitmap $e000; work memory $8000.
+- M1 (done): the split screen; the view's cell codes turned into 4x8 fat-pixel patterns
+  (`FAT` in `src/view.asm`), so it looks like the text version, in bitmap.
+- M2: painted pieces made by a Python script + a converter (PNG -> cell data).
+- M3: polish (per-deck art, faster drawing).

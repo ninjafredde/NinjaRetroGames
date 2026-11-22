@@ -215,60 +215,58 @@ pc_hi:   .fill NPIECES, >(PIECE_AT.get(i) + PIECES.get(i).size()*2)
 pd_lo:   .fill NPIECES, <(PIECE_AT.get(i) + PIECES.get(i).size()*3)
 pd_hi:   .fill NPIECES, >(PIECE_AT.get(i) + PIECES.get(i).size()*3)
 
-// the minimap arrow, pointing north; rotate() turns it clockwise
-.var ARROW = List().add(
-    "...##...",
-    "..####..",
-    ".######.",
-    "########",
-    "...##...",
-    "...##...",
-    "...##...",
-    "........").lock()
-.function rotate(rows, times) {
-    .var g = rows
-    .for (var t=0; t<times; t++) {
-        .var out = List()
-        .for (var y=0; y<8; y++) {
-            .var s = ""
-            .for (var x=0; x<8; x++) .eval s = s + g.get(7-x).substring(y, y+1)
-            .eval out.add(s)
-        }
-        .eval g = out
-    }
-    .return g
+// ---------------------------------------------------------------- the cell patterns
+// Every shape is 4 fat pixels x 8 rows: x = the ink (colour RAM), . = the background
+// the code picks with its top 2 bits (0: black, 64: floor, 128: ceiling).
+// mc_patterns holds all 256 codes x 8 bytes; a code with no shape is all background.
+.var FAT = Hashtable()
+.function fill8(s) { .return List().add(s, s, s, s, s, s, s, s) }
+.eval FAT.put(G_SOLID, fill8("xxxx"))
+.eval FAT.put(G_TLL,   List().add("x...", "x...", "xx..", "xx..", "xxx.", "xxx.", "xxxx", "xxxx"))
+.eval FAT.put(G_TUL,   List().add("xxxx", "xxxx", "xxx.", "xxx.", "xx..", "xx..", "x...", "x..."))
+.eval FAT.put(G_TLR,   List().add("...x", "...x", "..xx", "..xx", ".xxx", ".xxx", "xxxx", "xxxx"))
+.eval FAT.put(G_TUR,   List().add("xxxx", "xxxx", ".xxx", ".xxx", "..xx", "..xx", "...x", "...x"))
+.eval FAT.put(G_SEAMR, fill8("xxx."))
+.eval FAT.put(G_SEAML, fill8(".xxx"))
+.eval FAT.put(G_LINEB, List().add("....", "....", "....", "....", "....", "....", "....", "xxxx"))
+.eval FAT.put(G_LINET, List().add("xxxx", "....", "....", "....", "....", "....", "....", "...."))
+.eval FAT.put(G_LAMP,  List().add("....", "....", "....", ".xx.", "xxxx", ".xx.", "....", "...."))
+.eval FAT.put(G_PANH,  List().add("....", "xxxx", "xxxx", "xxxx", "xxxx", "xxxx", "xxxx", "xxxx"))
+.eval FAT.put(G_PANX,  List().add("....", ".xxx", ".xxx", ".xxx", ".xxx", ".xxx", ".xxx", ".xxx"))
+.eval FAT.put(G_GRILL, List().add("xxxx", "....", "xxxx", "....", "xxxx", "....", "xxxx", "...."))
+.eval FAT.put(G_RIVET, List().add("xxxx", "xxxx", "x.xx", "x.xx", "xxxx", "xxxx", "xxxx", "xxxx"))
+.eval FAT.put(G_D75,   List().add("xxx.", "x.xx", "xxx.", "x.xx", "xxx.", "x.xx", "xxx.", "x.xx"))
+.eval FAT.put(G_D50,   List().add("x.x.", ".x.x", "x.x.", ".x.x", "x.x.", ".x.x", "x.x.", ".x.x"))
+.eval FAT.put(G_D25,   List().add("x...", "..x.", "x...", "..x.", "x...", "..x.", "x...", "..x."))
+// the minimap: you (N E S W), a note, an item, the hatch, the end
+.eval FAT.put(59, List().add(".xx.", "xxxx", "xxxx", ".xx.", ".xx.", ".xx.", ".xx.", "...."))
+.eval FAT.put(61, List().add("....", "..x.", "..xx", "xxxx", "xxxx", "..xx", "..x.", "...."))
+.eval FAT.put(62, List().add("....", ".xx.", ".xx.", ".xx.", ".xx.", "xxxx", "xxxx", ".xx."))
+.eval FAT.put(63, List().add("....", ".x..", "xx..", "xxxx", "xxxx", "xx..", ".x..", "...."))
+.eval FAT.put(46, List().add("....", "....", "....", ".xx.", ".xx.", "....", "....", "...."))
+.eval FAT.put(42, List().add("....", ".xx.", "xxxx", "xxxx", ".xx.", "....", "....", "...."))
+.eval FAT.put(8,  List().add("x..x", "x..x", "x..x", "xxxx", "x..x", "x..x", "x..x", "...."))
+.eval FAT.put(5,  List().add("xxxx", "x...", "x...", "xxx.", "x...", "x...", "xxxx", "...."))
+.eval FAT.lock()
+.function bgBits(sel) {
+    .if (sel == 1) .return 1
+    .if (sel == 2) .return 2
+    .return 0
 }
-.macro Glyph(rows) {
-    .for (var y=0; y<8; y++) {
-        .var b = 0
-        .for (var x=0; x<8; x++) .if (rows.get(y).substring(x, x+1) == "#") .eval b = b | ($80 >> x)
-        .byte b
+.function fatByte(c, y) {
+    .var g = c & 63
+    .var bg = bgBits(c >> 6)
+    .var b = 0
+    .for (var k=0; k<4; k++) {
+        .var on = false
+        .if (FAT.containsKey(g)) .eval on = FAT.get(g).get(y).substring(k, k+1) == "x"
+        .eval b = b | ((on ? 3 : bg) << (6 - 2*k))
     }
+    .return b
 }
-
-// ---------------------------------------------------------------- glyph shapes
-.var GLYPH_CODES = List().add(G_SOLID, G_TLL, G_TUL, G_TLR, G_TUR, G_SEAMR, G_SEAML, 59, 61, 62, 63,
-    G_LINEB, G_LINET, G_LAMP, G_PANH, G_PANX, G_GRILL, G_RIVET, G_D75, G_D50, G_D25)
-.const NGLYPHS = GLYPH_CODES.size()
-glyph_data:
-        .fill 8, $ff                            // solid
-        .fill 8, ($ff << (7-i)) & $ff           // lower-left
-        .fill 8, ($ff << i) & $ff               // upper-left
-        .fill 8, $ff >> (7-i)                   // lower-right
-        .fill 8, $ff >> i                       // upper-right
-        .fill 8, $fe                            // seam right
-        .fill 8, $7f                            // seam left
-        .for (var d=0; d<4; d++) Glyph(rotate(ARROW, d))
-        .byte 0, 0, 0, 0, 0, 0, 0, $ff         // line along the bottom
-        .byte $ff, 0, 0, 0, 0, 0, 0, 0         // line along the top
-        .byte 0, 0, 0, $7e, $ff, $7e, 0, 0     // lamp
-        .byte 0, $ff, $ff, $ff, $ff, $ff, $ff, $ff      // seam on top
-        .byte 0, $7f, $7f, $7f, $7f, $7f, $7f, $7f      // seams top + left
-        .byte $ff, 0, $ff, 0, $ff, 0, $ff, 0            // vent
-        .byte $ff, $ff, $e7, $c3, $c3, $e7, $ff, $ff    // bolt
-        .byte $77, $dd, $77, $dd, $77, $dd, $77, $dd    // fog 75%
-        .byte $aa, $55, $aa, $55, $aa, $55, $aa, $55    // fog 50%
-        .byte $88, $22, $88, $22, $88, $22, $88, $22    // fog 25%
+mc_patterns:
+.for (var c=0; c<256; c++)
+    .for (var y=0; y<8; y++) .byte fatByte(c, y)
 
 // ---------------------------------------------------------------- fog
 // Every cell of the view gets a depth (0 near - 3 far): the piece's own, or for floor

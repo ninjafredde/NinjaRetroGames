@@ -7,6 +7,8 @@
 // Now and then something blocks the way: the crew fights (combat.asm).
 // Doors, keycards, medkits (M), and a hatch down to the next deck (items.asm).
 //
+// The screen is split (screen.asm): a multicolour bitmap on top, text below.
+//
 // Test builds:  -define DEMO       walks a scripted route by itself (always fights)
 //               -define FIGHTTEST  a fight on every step
 //               -define NOFIGHTS   no fights at all
@@ -17,23 +19,29 @@
 #import "map.asm"
 #import "monsters.asm"
 
-.const SCREEN  = $0400
+// VIC bank 3 (see screen.asm)
+.const SCREEN  = $c000
 .const COLRAM  = $d800
-.const CHARSET = $3800
-.const MON_SPRITES = $3a00      // the monster sprites (12 of them), after the 64 characters
-.const BUFC    = $c000          // the view is drawn here (codes) ...
-.const BUFK    = $c200          // ... and here (colours), then copied to the screen
-.const SEEN    = $c400          // 1 = a map cell you have seen (minimap)
-.label map     = $c500          // this deck: 0 floor, 1 wall, 2 door, 3 locked door
-.label special = $c600          // this deck: notes, items, hatch, end (see map.asm)
-.const BUFD    = $c800          // the view's depth per cell (for the fog)
-.const FOGDUMMY = $ca00         // blit writes depths here for pieces that keep the floor's
-.const MINI    = SCREEN + 6*40 + 23 // the minimap's top-left
+.const BITMAP  = $e000
+.const CHARSET = $c800          // the text rows' letters (from the ROM)
+.const MON_SPRITES  = $c400     // the monster sprites (12)
+.const ITEM_SPRITES = $cc00     // the item sprites (6)
+.const SPLIT_LINE = 51 + 8*20 - 3       // the interrupt just before text row 20
+.const TOP_LINE   = 8                   // ... and back to bitmap above the picture
+.const MINI_ROW   = 3           // the minimap's top-left cell (in the bitmap)
+.const MINI_COL   = 23
+// work memory
+.const BUFC    = $8000          // the view is drawn here (codes) ...
+.const BUFK    = $8200          // ... and here (inks), then shown by present
+.const BUFD    = $8400          // the view's depth per cell (for the fog)
+.const FOGDUMMY = $8600         // blit writes depths here for pieces that keep the floor's
+.const SEEN    = $8800          // 1 = a map cell you have seen (minimap)
+.label map     = $8900          // this deck: 0 floor, 1 wall, 2 door, 3 locked door
+.label special = $8a00          // this deck: notes, items, hatch, end (see map.asm)
 .const LOG     = SCREEN + 22*40 + 1 // the 3 log lines (38 wide)
 .const LOG_W   = 38
 .const VX      = 1              // the view's top-left on the screen
-.const VY      = 1
-.const COPY_LINE = 51 + 8*(VY+20) + 1   // raster line just under the view
+.const VY      = 0
 
 .const COL_FLOOR = 9            // brown deck plates
 .const COL_CEIL  = 11           // dark grey
@@ -89,6 +97,26 @@
 .label fcode   = $3a
 .label fx      = $3b
 .label si_depth = $3c
+// the screen (screen.asm)
+.label frames  = $3d            // counts frames (the interrupt)
+.label irq_top = $3e
+.label pp      = $40            // 2: a pattern
+.label dp      = $42            // 2: a bitmap cell
+.label cr      = $44            // the cell's row
+.label cc      = $45            // ... column
+.label ccol    = $46            // ... ink
+.label cscr    = $47            // ... screen byte (floor/ceiling colours)
+.label tp      = $48            // 2: text
+.label prev_pos = $4a
+.label view_scr = $4b           // floor << 4 | ceiling
+.label bc      = $4c            // 2: present's pointers
+.label bk      = $4e            // 2
+.label sr      = $50            // 2
+.label crp     = $52            // 2
+.label pcol    = $54
+.label mi      = $55
+.label prow    = $56
+.label bty     = $57
 
 .macro Print(dest, src, col) {
         ldx #0
@@ -147,40 +175,15 @@ done:
 
 BasicUpstart2(start)
 
-#import "view.asm"           // the view pieces (data) and the glyph shapes
+#import "view.asm"           // the view pieces (data) and the cell patterns
+#import "screen.asm"         // the split screen, drawing into the bitmap
 
 start:
         lda #0
         sta $d020
         sta $d021
-        lda #COL_FLOOR
-        sta $d022
-        lda #COL_CEIL
-        sta $d023
-        jsr make_charset
-        lda #$1e                // screen $0400, characters $3800
-        sta $d018
-        lda #$5b                // extended background colour mode on
-        sta $d011
-
-        ldx #0                  // clear the screen
-!:      lda #32
-        sta SCREEN,x
-        sta SCREEN+$100,x
-        sta SCREEN+$200,x
-        sta SCREEN+$2e8,x
-        lda #COL_TEXT
-        sta COLRAM,x
-        sta COLRAM+$100,x
-        sta COLRAM+$200,x
-        sta COLRAM+$2e8,x
-        inx
-        bne !-
-        jsr draw_frame
-
+        jsr screen_init
         jsr crew_init
-        Print(SCREEN + 0*40 + 23, txt_title1, COL_TITLE)
-        Print(SCREEN + 1*40 + 23, txt_title2, COL_TITLE)
 
         lda #$0f                // SID: volume, voice 1 for thuds and steps
         sta $d418
@@ -195,6 +198,7 @@ start:
 #endif
         sta deck
         jsr load_deck
+        jsr draw_frame
         lda #0
         sta lastact
         sta flash
@@ -210,9 +214,7 @@ start:
 
 // ---------------------------------------------------------------- main loop
 main:
-        lda #COPY_LINE
-!:      cmp $d012
-        bne !-
+        jsr frame
         jsr do_flash
         jsr read_input
         bne got
@@ -284,6 +286,7 @@ open_door:
         ldx t0
         lda #0
         sta map,x
+        jsr mini_cell
         lda #$60
         jsr sound
         Message(txt_door)
@@ -311,7 +314,11 @@ show_all:
         jsr mark_seen
         jsr render
         jsr show_item
-        jsr draw_minimap
+        ldx prev_pos            // the minimap: where you were, where you are
+        jsr mini_cell
+        ldx pos
+        stx prev_pos
+        jsr mini_cell
         jmp status
 
 // ---------------------------------------------------------------- input
@@ -408,29 +415,14 @@ off:    lda #0
         sta $d020
 !:      rts
 
-draw_frame:
-        ldx #VX-1
-!:      lda #G_SOLID
-        sta SCREEN + (VY-1)*40,x
-        sta SCREEN + (VY+VH)*40,x
-        lda #COL_FRAME
-        sta COLRAM + (VY-1)*40,x
-        sta COLRAM + (VY+VH)*40,x
-        inx
-        cpx #VX+VW+1
-        bne !-
-        .for (var r=VY; r<VY+VH; r++) {
-            lda #G_SOLID
-            sta SCREEN + r*40 + VX-1
-            sta SCREEN + r*40 + VX+VW
-            lda #COL_FRAME
-            sta COLRAM + r*40 + VX-1
-            sta COLRAM + r*40 + VX+VW
-        }
-        rts
-
-// facing + position, right of the view; clears the message line
+// text row 21: deck, facing, medkits, keys
+.const STATUS = SCREEN + 21*40 + 1
 status:
+        Print(STATUS, txt_status, COL_TEXT)
+        lda deck
+        clc
+        adc #49
+        sta STATUS + 5
         lda dir
         asl
         sta t0
@@ -440,36 +432,19 @@ status:
         tay
         ldx #0
 !:      lda dir_names,y
-        sta SCREEN + 2*40 + 23,x
+        sta STATUS + 15,x
         iny
         inx
         cpx #6
         bne !-
-        Print(SCREEN + 2*40 + 29, txt_inv, COL_TEXT)
         lda meds
         clc
         adc #48
-        sta SCREEN + 2*40 + 32
+        sta STATUS + 30
         lda keys
         clc
         adc #48
-        sta SCREEN + 2*40 + 37
-        rts
-
-// A = 0-15, printed as two digits on row 2, column X
-put_num:
-        ldy #'0'
-        cmp #10
-        bcc !+
-        sbc #10
-        ldy #'1'
-!:      pha
-        tya
-        sta SCREEN + 2*40,x
-        pla
-        clc
-        adc #'0'
-        sta SCREEN + 2*40 + 1,x
+        sta STATUS + 38
         rts
 
 // ---------------------------------------------------------------- the log
@@ -532,111 +507,31 @@ message:
 
 // ---------------------------------------------------------------- the minimap
 // mark what the view shows: down the corridor until a wall, and both sides
+// (a cell seen for the first time goes on the minimap)
+.macro MarkSeen() {
+        lda SEEN,x
+        bne done
+        lda #1
+        sta SEEN,x
+        jsr mini_cell
+done:
+}
 mark_seen:
         .for (var f=0; f<4; f++) {
             Cell(f, 0)
             sta t0
-            lda #1
-            sta SEEN,x
+            MarkSeen()
             lda t0
             beq !+
             jmp ms_done
 !:          Cell(f, -1)
-            lda #1
-            sta SEEN,x
+            MarkSeen()
             Cell(f, 1)
-            lda #1
-            sta SEEN,x
+            MarkSeen()
         }
 ms_done:
         rts
 
-// unseen: black. wall: grey block. floor: deck brown. a note: a yellow dot.
-draw_minimap:
-        lda #<MINI
-        sta zp
-        sta zp2
-        lda #>MINI
-        sta zp+1
-        clc
-        adc #>(COLRAM-SCREEN)
-        sta zp2+1
-        ldx #0                  // map cell
-dm_row: ldy #0                  // column
-dm_cell:
-        lda SEEN,x
-        beq dm_blank
-        lda map,x
-        bne dm_wall
-        lda special,x
-        bne dm_special
-        lda #C_FLOOR
-        bne dm_put
-dm_special:
-        stx t0
-        tax
-        lda sp_char,x
-        sta (zp),y
-        lda sp_col,x
-        sta (zp2),y
-        ldx t0
-        jmp dm_next
-dm_wall:
-        stx t0
-        tax
-        lda #G_SOLID
-        sta (zp),y
-        lda wall_col,x
-        sta (zp2),y
-        ldx t0
-        jmp dm_next
-dm_blank:
-        lda #32
-dm_put: sta (zp),y
-dm_next:
-        inx
-        iny
-        cpy #16
-        bne dm_cell
-        lda zp                  // next screen row
-        clc
-        adc #40
-        sta zp
-        sta zp2
-        bcc !+
-        inc zp+1
-        inc zp2+1
-!:      txa
-        bne dm_row
-        // you: an arrow on the floor
-        lda pos
-        lsr
-        lsr
-        lsr
-        lsr
-        tay
-        lda pos
-        and #15
-        clc
-        adc mini_lo,y
-        sta zp
-        sta zp2
-        lda mini_hi,y
-        adc #0
-        sta zp+1
-        clc
-        adc #>(COLRAM-SCREEN)
-        sta zp2+1
-        ldy dir
-        lda arrow_code,y
-        ldy #0
-        sta (zp),y
-        lda #7
-        sta (zp2),y
-        rts
-
-mini_lo:    .fill 16, <(MINI + i*40)
-mini_hi:    .fill 16, >(MINI + i*40)
 arrow_code: .byte 59 + ON_FLOOR, 61 + ON_FLOOR, 62 + ON_FLOOR, 63 + ON_FLOOR
 
 #import "combat.asm"
@@ -748,22 +643,7 @@ render:
         Depth(1)
         Depth(0)
         jsr fog
-        // copy to the screen while the raster is below the view
-        lda #COPY_LINE
-!:      cmp $d012
-        bne !-
-        ldx #VW-1
-copy:
-        .for (var r=0; r<VH; r++) {
-            lda BUFC + r*VW,x
-            sta SCREEN + (VY+r)*40 + VX,x
-            lda BUFK + r*VW,x
-            sta COLRAM + (VY+r)*40 + VX,x
-        }
-        dex
-        bmi !+
-        jmp copy
-!:      rts
+        jmp present
 
 // A = piece number: write its cells into the buffers
 blit:
@@ -830,34 +710,12 @@ bn:     cpx #0
         bne bl
         rts
 
-// ROM letters for 0-63, then our wall shapes over the unused ones
-make_charset:
-        sei
-        lda #$33
-        sta $01
-        ldx #0
-!:      lda $d000,x
-        sta CHARSET,x
-        lda $d100,x
-        sta CHARSET+$100,x
-        inx
-        bne !-
-        lda #$37
-        sta $01
-        cli
-        .for (var g=0; g<NGLYPHS; g++) {
-            ldy #7
-!:          lda glyph_data + g*8,y
-            sta CHARSET + GLYPH_CODES.get(g)*8,y
-            dey
-            bpl !-
-        }
-        rts
-
 // ---------------------------------------------------------------- tables
 txt_title1: .text "WASTE OF SPACE"
             .byte 0
-txt_title2: .text "DERELICT  DECK 1"
+txt_title2: .text "   DERELICT"
+            .byte 0
+txt_status: .text "DECK    FACING        MEDKITS    KEYS  "
             .byte 0
 txt_wake:   .text "YOU WAKE UP ON A DEAD SHIP. ALONE..."
             .byte 0
@@ -887,22 +745,10 @@ delta:
         .for (var s=-1; s<=1; s++)
             .byte (f*FWD.get(d) + s*FWD.get((d+1)&3)) & $ff
 
-.errorif * > CHARSET, "program runs into the character set"
 
-// game text must stay clear of the screen codes used as wall shapes
-.function checkText(s) {
-    .for (var n=0; n<s.size(); n++)
-        .for (var m=0; m<RESERVED_CHARS.size(); m++)
-            .errorif s.substring(n, n+1) == RESERVED_CHARS.substring(m, m+1), "text can't use '" + RESERVED_CHARS.substring(m, m+1) + "' (it's a wall shape): " + s
-    .return 0
-}
-.for (var n=0; n<NOTES.size(); n++) .eval checkText(NOTES.get(n))
-.for (var n=0; n<ITEM_TEXT.size(); n++) .eval checkText(ITEM_TEXT.get(n))
-.for (var n=0; n<NMON; n++) .eval checkText(MON_NAME.get(n) + MON_VERB.get(n))
-.for (var n=0; n<NCREW; n++) .eval checkText(CREW_NAME.get(n))
-
-* = MON_SPRITES "Monsters"
+mon_sprite_data:
 .for (var m=0; m<NMON; m++) MonsterSprites(MON_PICS.get(m))
-.label ITEM_SPRITES = *
+item_sprite_data:
 .for (var n=0; n<NITEM_PICS; n++) ItemSprite(ITEM_PICS.get(n))
-.errorif * > $4000, "the monster sprites run out of the VIC bank"
+
+.errorif * > BUFC, "the program runs into the work memory at $8000"

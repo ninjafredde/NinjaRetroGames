@@ -20,7 +20,7 @@
 
 .const SPRPTR = SCREEN + $3f8
 .const MON_X  = 64              // the monster's top-left sprite position
-.const MON_Y  = 116
+.const MON_Y  = 108
 
 // ---------------------------------------------------------------- set up
 crew_init:
@@ -434,13 +434,6 @@ effects:
 !:      rts
 
 // ---------------------------------------------------------------- waiting
-frame:
-        lda #COPY_LINE
-!:      cmp $d012
-        bne !-
-!:      cmp $d012
-        beq !-
-        rts
 
 // a pause after a fight line; fire / space held: short
 pause:
@@ -529,37 +522,35 @@ rn_no:  ror
         rts
 
 // ---------------------------------------------------------------- the crew panel
-// rows 3-5 on the right: name, HP / max (or DOWN). Whose turn it is: white.
+// text row 20: name and HP (or DOWN) for each; green, yellow under half, red under a
+// quarter. Whose turn it is: white.
 draw_party:
         .for (var m=0; m<NCREW; m++) {
             ldx #7
 !:          lda crew_pad + m*8,x
-            sta SCREEN + (3+m)*40 + 23,x
+            sta SCREEN + 20*40 + 1 + m*13,x
             dex
             bpl !-
             ldx #m
             jsr crew_colour
             ldx #12
-!:          sta COLRAM + (3+m)*40 + 23,x
+!:          sta COLRAM + 20*40 + 1 + m*13,x
             dex
             bpl !-
             lda crew_hp + m
             beq down
             jsr two_digits
-            sta SCREEN + (3+m)*40 + 32
+            sta SCREEN + 20*40 + 1 + m*13 + 9
             lda t1
-            sta SCREEN + (3+m)*40 + 31
-            lda #47             // slash
-            sta SCREEN + (3+m)*40 + 33
-            lda crew_max + m
-            jsr two_digits
-            sta SCREEN + (3+m)*40 + 35
-            lda t1
-            sta SCREEN + (3+m)*40 + 34
+            sta SCREEN + 20*40 + 1 + m*13 + 8
+            lda #32             // (the colour says how hurt)
+            sta SCREEN + 20*40 + 1 + m*13 + 10
+            sta SCREEN + 20*40 + 1 + m*13 + 11
+            sta SCREEN + 20*40 + 1 + m*13 + 12
             jmp next
 down:       ldx #4
 !:          lda txt_down,x
-            sta SCREEN + (3+m)*40 + 31,x
+            sta SCREEN + 20*40 + 1 + m*13 + 8,x
             dex
             bpl !-
 next:
@@ -706,7 +697,7 @@ mon_hp:     .fill NMON, MON_HP.get(i)
 mon_atk:    .fill NMON, MON_ATK.get(i)
 mon_max:    .fill NMON, MON_MAX.get(i)
 mon_col:    .fill NMON, MON_COLOUR.get(i)
-mon_frame:  .fill NMON, MON_SPRITES/64 + i*4
+mon_frame:  .fill NMON, (MON_SPRITES - $c000)/64 + i*4
 .var MNAME_AT = List()
 .var VERB_AT = List()
 .for (var m=0; m<NMON; m++) {
