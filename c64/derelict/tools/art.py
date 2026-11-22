@@ -3,6 +3,7 @@
   python tools/art.py convert       art/*.png -> src/gen/*.asm (build.bat runs this)
   python tools/art.py paint view    paint art/view.png from code (OVERWRITES your edits!)
   python tools/art.py paint frame   paint art/frame.png from code (OVERWRITES your edits!)
+  python tools/art.py paint title   paint art/title.png from code (OVERWRITES your edits!)
 
 art/view.png is a sheet of 18 frames (6 x 3), each the whole 20 x 20 cell view
 (160 x 160 pixels; one C64 multicolour pixel = 2 screen pixels wide). Frame 0 is the
@@ -15,6 +16,9 @@ the nearest of the 3, and says how many cells it had to squeeze).
 art/frame.png is the frame around everything: the top 20 rows of the screen (320 x 160,
 2 screen pixels per C64 pixel, the same colour rules). Magenta: the holes the program
 draws itself (the view, the minimap, the title).
+
+art/title.png is the title screen: the whole screen (320 x 200), the same colour rules.
+The program writes PRESS FIRE on row 22 (columns 15-24) itself, so keep that black.
 """
 import os, sys, random
 from PIL import Image
@@ -24,6 +28,8 @@ PNG = os.path.join(ROOT, 'art', 'view.png')
 OUT = os.path.join(ROOT, 'src', 'gen', 'view_art.asm')
 FRAME_PNG = os.path.join(ROOT, 'art', 'frame.png')
 FRAME_OUT = os.path.join(ROOT, 'src', 'gen', 'frame_art.asm')
+TITLE_PNG = os.path.join(ROOT, 'art', 'title.png')
+TITLE_OUT = os.path.join(ROOT, 'src', 'gen', 'title_art.asm')
 
 VW = VH = 20
 INSET = [0, 4, 7, 9]
@@ -461,10 +467,139 @@ def convert_ui():
     print('frame art: %d cells, %d different patterns, %d cells squeezed to 3 colours'
           % (len(recs), len(cv.patterns), cv.squeezed))
 
+
+# ---------------------------------------------------------------- the title screen
+# art/title.png: the whole screen (320 x 200), shown until fire. The program writes
+# PRESS FIRE on row 22 itself (it blinks), so keep cells 15-24 of that row black.
+TW, TH = 160, 200
+CHARGEN = os.path.join(ROOT, '..', 'c64', 'tools', 'GTK3VICE-3.10-win64', 'C64', 'chargen-901225-01.bin')
+
+def text_pixels(s, x0, y0, sx, sy, gap=0):
+    """the ROM letters of s, each font pixel sx x sy C64 pixels -> {(x, y): row in the letter}"""
+    rom = open(CHARGEN, 'rb').read()
+    out = {}
+    for n, ch in enumerate(s):
+        code = ord(ch) - 64 if 'A' <= ch <= 'Z' else ord(ch)
+        for fy in range(8):
+            bits = rom[code * 8 + fy]
+            for fx in range(8):
+                if bits & (0x80 >> fx):
+                    for dy in range(sy):
+                        for dx in range(sx):
+                            out[(x0 + n * (8 * sx + gap) + fx * sx + dx, y0 + fy * sy + dy)] = fy * sy + dy
+    return out
+
+HULL = [(8, 136), (36, 120), (92, 114), (98, 102), (110, 97), (124, 101), (128, 114),
+        (146, 118), (150, 124), (150, 148), (144, 154), (40, 154)]
+
+def inside(poly, x, y):
+    c = False
+    for i in range(len(poly)):
+        (x1, y1), (x2, y2) = poly[i], poly[i - 1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            c = not c
+    return c
+
+def paint_title():
+    logo = text_pixels('DERELICT', 9, 34, 2, 4, gap=2)
+    small = text_pixels('WASTE OF SPACE', 24, 14, 1, 1)
+    crew = text_pixels('JOHN  SHIN  JIMMIE', 8, 190, 1, 1)
+    srnd = random.Random(7)
+    stars = {}
+    for _ in range(140):
+        x, y = srnd.randrange(TW), srnd.randrange(TH)
+        if 26 <= y <= 74 or y >= 172:
+            continue                                 # not by the logo, the prompt, the names
+        stars[(x, y)] = srnd.choice((DGREY, DGREY, GREY, LGREY))
+    spans = {}
+    for x in range(TW):
+        ys = [y for y in range(90, 160) if inside(HULL, x + 0.5, y + 0.5)]
+        spans[x] = (min(ys), max(ys)) if ys else None
+    hole = {}
+    sheet = Image.new('RGB', (TW * 2, TH), PAL[BLACK])
+    px = sheet.load()
+    for y in range(TH):
+        for x in range(TW):
+            col = stars.get((x, y), BLACK)
+            if (x, y) in small:
+                col = LBLUE
+            if (x - 1, y - 2) in logo:
+                col = DGREY                          # the logo's shadow
+            if (x, y) in logo:
+                t = logo[(x, y)] / 31
+                col = mix(YELLOW, ORANGE, (t - 0.25) * 1.6, x, y)
+            if (x, y) in crew:
+                col = GREY
+            sp = spans[x]
+            if sp and inside(HULL, x + 0.5, y + 0.5):
+                top, bot = sp
+                t = (y - top) / max(1, bot - top)
+                col = ramp([LGREY, GREY, DGREY, BLACK], 0.4 + t * 2.4 + (x / TW) * 0.5, x, y)
+                if y == top:
+                    col = LGREY                      # the lit top edge
+                elif x % 14 == 0 and y > top + 1:
+                    col = DGREY                      # plate seams
+                elif y == 131:
+                    col = DGREY
+                if y in (124, 125) and x % 6 == 0 and 26 <= x <= 140:
+                    col = YELLOW if x in (54, 90) else BLACK    # windows, nearly all dark
+                if y in (104, 105) and x % 4 == 0 and 104 <= x <= 120:
+                    col = BLACK
+                d = (x - 72) ** 2 + ((y - 142) * 1.8) ** 2
+                if d < 60 + srnd.random() * 30:
+                    col = BLACK                      # the hole in her side
+            if 151 <= x <= 156 and (121 <= y <= 132 or 137 <= y <= 148):
+                col = DGREY if x in (151, 156) or y in (121, 132, 137, 148) else BLACK   # dead engines
+            px[2 * x, y] = PAL[col]
+            px[2 * x + 1, y] = PAL[col]
+    sheet.save(TITLE_PNG)
+    print('painted', TITLE_PNG)
+
+def rle(data, esc):
+    out, i = [], 0
+    while i < len(data):
+        v = data[i]
+        n = 1
+        while i + n < len(data) and data[i + n] == v and n < 255:
+            n += 1
+        if n >= 4 or v == esc:
+            out += [esc, n, v]
+        else:
+            out += [v] * n
+        i += n
+    return out + [esc, 0]
+
+def convert_title():
+    cv = Cells(TITLE_PNG)
+    cells = [[cv.cell(cx * 8, cy * 8) for cx in range(40)] for cy in range(25)]
+    # the bitmap a row of cells at a time: byte 0 of all 40 cells, then byte 1, ...
+    # (so dither that repeats along the screen packs into runs)
+    bm = []
+    for cy in range(25):
+        for b in range(8):
+            for cx in range(40):
+                bm.append(cv.patterns[cells[cy][cx][0]][b])
+    scr = [cells[cy][cx][1] for cy in range(25) for cx in range(40)]
+    col = [cells[cy][cx][2] for cy in range(25) for cx in range(40)]
+    allb = bm + scr + col
+    esc = min(range(256), key=lambda v: allb.count(v))
+    packs = [rle(bm, esc), rle(scr, esc), rle(col, esc)]
+    L = []
+    w = L.append
+    w('// GENERATED by tools/art.py convert from art/title.png - edit the PNG (or the painter), not this')
+    w('.const TITLE_ESC = %d' % esc)
+    for name, data in zip(('title_bm', 'title_scr', 'title_col'), packs):
+        write_bytes(w, name, data)
+    with open(TITLE_OUT, 'w') as f:
+        f.write('\n'.join(L) + '\n')
+    print('title art: packed into %d bytes (of 10000), %d cells squeezed to 3 colours'
+          % (sum(len(p) for p in packs), cv.squeezed))
+
 USAGE = """usage:
   python tools/art.py convert       both PNGs -> src/gen (build.bat runs this)
   python tools/art.py paint view    paint art/view.png from code (OVERWRITES your edits!)
-  python tools/art.py paint frame   paint art/frame.png from code (OVERWRITES your edits!)"""
+  python tools/art.py paint frame   paint art/frame.png from code (OVERWRITES your edits!)
+  python tools/art.py paint title   paint art/title.png from code (OVERWRITES your edits!)"""
 
 if __name__ == '__main__':
     cmd = sys.argv[1:]
@@ -472,9 +607,12 @@ if __name__ == '__main__':
         paint_view()
     elif cmd == ['paint', 'frame']:
         paint_ui()
+    elif cmd == ['paint', 'title']:
+        paint_title()
     elif cmd == ['convert']:
         convert_view()
         convert_ui()
+        convert_title()
     else:
         print(__doc__)
         print(USAGE)

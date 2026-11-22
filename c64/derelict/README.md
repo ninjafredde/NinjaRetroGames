@@ -88,3 +88,8 @@ $c400/$cc00, bitmap $e000), copy B in bank 2 at the same places minus $4000. Tex
     How: patterns stored as 8 byte planes, depth baked into the colours, the background
     read straight from its tables instead of copied, the blit's cells sorted by page.
   - `-define TIMING`: frames per redraw at the right edge of the log (last, most).
+- Title screen (done): `art/title.png` (320 x 200, the same colour rules; keep row 22
+  columns 15-24 black: PRESS FIRE goes there and blinks). Packed by `tools/art.py convert`
+  (run-length, about 4 KB) into `src/gen/title_art.asm`; `src/title.asm` unpacks it and
+  waits for fire or space. Shown at start and after the end or a lost game.
+  `tools/art.py paint title` repaints it from code (OVERWRITES the PNG).

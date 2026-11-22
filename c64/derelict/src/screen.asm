@@ -54,17 +54,7 @@ screen_init:
         sta flip_req
         lda #1
         sta $d01a
-        lda #$33                // the ROM characters -> $c800 (128 of them)
-        sta $01
-        ldx #0
-!:      .for (var p=0; p<4; p++) {
-            lda $d000 + p*256,x
-            sta CHARSET + p*256,x
-        }
-        inx
-        bne !-
-        lda #$37
-        sta $01
+        jsr copy_chars
         cli
         ldx #RAIL_CHARS*8-1     // the rails down the sides of the text rows
 !:      lda rail_chars,x
@@ -122,6 +112,21 @@ screen_init:
             sta COLRAM + r*40
             sta COLRAM + r*40 + 39
         }
+        rts
+
+// the ROM characters -> $c800 (128 of them); interrupts must be off
+copy_chars:
+        lda #$33
+        sta $01
+        ldx #0
+!:      .for (var p=0; p<4; p++) {
+            lda $d000 + p*256,x
+            sta CHARSET + p*256,x
+        }
+        inx
+        bne !-
+        lda #$37
+        sta $01
         rts
 
 // Copy(src, dst, bytes): a straight copy at start

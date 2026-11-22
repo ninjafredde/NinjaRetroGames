@@ -187,11 +187,13 @@ BasicUpstart2(start)
 
 #import "view.asm"           // the view pieces (data) and the cell patterns
 #import "screen.asm"         // the split screen, drawing into the bitmap
+#import "title.asm"          // the title screen
 
 start:
         lda #0
         sta $d020
         sta $d021
+        jsr title
         jsr screen_init
         jsr crew_init
 
