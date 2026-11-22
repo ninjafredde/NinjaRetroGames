@@ -49,9 +49,12 @@ title:
 #endif
 !:      jsr fire_down           // let go of fire first (from the last game)
         bne !-
+        lda #0                  // the title tune
+        jsr music_begin
         lda #0
         sta t0
 t_wait: jsr vsync
+        jsr music_play
         inc t0
         lda t0                  // PRESS FIRE blinks
         and #31
@@ -66,7 +69,7 @@ t_wait: jsr vsync
         bpl !-
 t_key:  jsr fire_down
         beq t_wait
-        rts
+        jmp music_stop
 
 // A = 1 (Z clear) when fire (port 2) or space is down
 fire_down:
@@ -192,6 +195,8 @@ ut_src: .for (var b=0; b<8; b++) {      // 7 bytes each
 !:      lda #$37
         sta $01
         rts
+
+#import "music.asm"
 
 txt_fire:   .text "PRESS FIRE"
             .byte 0

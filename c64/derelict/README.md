@@ -93,3 +93,5 @@ $c400/$cc00, bitmap $e000), copy B in bank 2 at the same places minus $4000. Tex
   (run-length, about 4 KB) into `src/gen/title_art.asm`; `src/title.asm` unpacks it and
   waits for fire or space. Shown at start and after the end or a lost game.
   `tools/art.py paint title` repaints it from code (OVERWRITES the PNG).
+  The title plays the shoot-em-up's title tune (`src/music.asm`: the tune is text, three
+  voices, see its header). Builds to `build/woscrawler.prg` and `build/woscrawler.d64`.
