@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Text art -> Game Boy data.
 
-Reads art/tiles.txt, art/font.txt, art/sprites.txt, art/rooms.txt and art/things.txt
+Reads art/tiles.txt, font.txt, items.txt, sprites.txt, rooms.txt and things.txt
 and writes src/gen/gfx.asm (tiles, constants, charmaps), src/gen/rooms.asm (room table)
 and src/gen/things.asm (people/objects per room + their text boxes).
 build.bat runs this before the assembler. Errors name the file and line.
@@ -117,6 +117,19 @@ def main():
     consts["TILE_HUDLINE"] = text_map["~"]
     consts["TILE_ARROW"] = text_map["^"]
 
+    # --- items: 8x8 HUD icons
+    item_names = []
+    consts["ITEM_ICON_BASE"] = len(tiles)
+    for b in blocks(ART / "items.txt"):
+        if len(b["head"]) != 2 or b["head"][0] != "item":
+            raise ArtError(f"{b['where']}: header must be @item NAME")
+        name = b["head"][1].lower()
+        if name in item_names or not name.replace("_", "").isalnum():
+            raise ArtError(f"{b['where']}: bad or repeated item name")
+        item_names.append(name)
+        tiles.append(tile_bytes(check_art(b, 8, 8), 0, 0))
+    consts["ITEM_COUNT"] = len(item_names)
+
     # --- sprites (8x16 mode: start on an even tile; each 16x16 = TL, BL, TR, BR)
     if len(tiles) % 2:
         tiles.append([0] * 16)
@@ -190,7 +203,44 @@ def main():
             if open_cells != edge(other[3], opposite[side]):
                 raise ArtError(f"{b['where']}: doorway on side {side} of {name} does not line up with {links[side]}")
 
-    # --- things: people and objects John can talk to
+    # --- things: people and objects John can talk to, each with a little script
+    var_names = list(item_names)          # items are the first variables
+    set_somewhere = set(item_names)
+    used_in_if = {}
+
+    def var(name, where):
+        n = name.lower()
+        if not n or not n.replace("_", "").isalnum() or n in ("if", "do", "give", "take"):
+            raise ArtError(f"{where}: '{name}' is not a usable name")
+        if n not in var_names:
+            var_names.append(n)
+        return var_names.index(n)
+
+    def number(v, where):
+        if not v.isdigit() or int(v) > 255:
+            raise ArtError(f"{where}: '{v}' should be a number 0-255")
+        return int(v)
+
+    def wrap(line, where):
+        lines, cur = [], ""
+        for wd in line.split():
+            if len(wd) > BOX_W:
+                raise ArtError(f"{where}: '{wd}' is longer than a box line ({BOX_W})")
+            for ch in wd:
+                if ch not in text_map:
+                    raise ArtError(f"{where}: no glyph for '{ch}' (add it to font.txt)")
+            if not cur:
+                cur = wd
+            elif len(cur) + 1 + len(wd) <= BOX_W:
+                cur += " " + wd
+            else:
+                lines.append(cur)
+                cur = wd
+        if cur:
+            lines.append(cur)
+        return [(lines[i].ljust(BOX_W), (lines[i + 1] if i + 1 < len(lines) else "").ljust(BOX_W))
+                for i in range(0, len(lines), 2)]
+
     room_things = {n: [] for n in names}
     talks = []
     for b in blocks(ART / "things.txt"):
@@ -230,35 +280,76 @@ def main():
                 for xx in range(tx, tx + w):
                     if not walkable(rows[yy][xx]):
                         raise ArtError(f"{b['where']}: {tname} stands on a solid tile at {xx},{yy}")
-        pages = []
+
+        # sections: [conditions or None for the fallback, ops]
+        sections = [[None, []]]
         for line in b["rows"]:
-            lines, cur = [], ""
-            for wd in line.split():
-                if len(wd) > BOX_W:
-                    raise ArtError(f"{b['where']}: '{wd}' is longer than a box line ({BOX_W})")
-                for ch in wd:
-                    if ch not in text_map:
-                        raise ArtError(f"{b['where']}: no glyph for '{ch}' (add it to font.txt)")
-                if not cur:
-                    cur = wd
-                elif len(cur) + 1 + len(wd) <= BOX_W:
-                    cur += " " + wd
-                else:
-                    lines.append(cur)
-                    cur = wd
-            if cur:
-                lines.append(cur)
-            for i in range(0, len(lines), 2):
-                pair = lines[i:i + 2] + [""]
-                pages.append((pair[0].ljust(BOX_W), pair[1].ljust(BOX_W)))
-        if not pages:
-            raise ArtError(f"{b['where']}: {tname} has nothing to say")
+            where = f"{b['where']} ({tname})"
+            word = line.split()[0].lower()
+            if word == "if":
+                conds = []
+                for tok in line.split()[1:]:
+                    if "!=" in tok:
+                        n, v = tok.split("!=", 1)
+                        conds.append((var(n, where), 1, number(v, where)))
+                    elif "=" in tok:
+                        n, v = tok.split("=", 1)
+                        conds.append((var(n, where), 0, number(v, where)))
+                    elif tok.startswith("!"):
+                        n = tok[1:]
+                        conds.append((var(n, where), 0, 0))
+                    else:
+                        n = tok
+                        conds.append((var(n, where), 1, 0))
+                    used_in_if.setdefault(n.lower(), where)
+                if not conds:
+                    raise ArtError(f"{where}: 'if' needs at least one condition")
+                sections.append([conds, []])
+            elif word == "do":
+                toks = line.split()[1:]
+                ops = sections[-1][1]
+                i = 0
+                while i < len(toks):
+                    t = toks[i].lower()
+                    i += 1
+                    if t in ("give", "take"):
+                        if i >= len(toks) or toks[i].lower() not in item_names:
+                            raise ArtError(f"{where}: '{t}' needs an item from items.txt ({', '.join(item_names)})")
+                        ops.append(("set", var_names.index(toks[i].lower()), 1 if t == "give" else 0, f"{t} {toks[i]}"))
+                        i += 1
+                    elif t == "shake":
+                        ops.append(("shake", 20, 1))
+                    elif t == "rattle":
+                        ops.append(("shake", 60, 2))
+                    elif t == "boom":
+                        ops.append(("boom",))
+                    elif t == "end":
+                        ops.append(("end",))
+                    elif "=" in t:
+                        n, v = t.split("=", 1)
+                        ops.append(("set", var(n, where), number(v, where), t))
+                        set_somewhere.add(n)
+                    else:
+                        raise ArtError(f"{where}: don't know 'do {t}' (name=N, give X, take X, shake, rattle, boom, end)")
+            else:
+                sections[-1][1] += [("page", pg) for pg in wrap(line, where)]
+        cases = [sec for sec in sections[1:]]
+        if sections[0][1]:
+            cases.append([[], sections[0][1]])
+        for conds, ops in cases:
+            if not any(op[0] == "page" for op in ops):
+                raise ArtError(f"{b['where']}: every case of {tname} needs at least one line of text")
         label = f"Talk{len(talks)}"
-        talks.append((label, tname, pages))
+        talks.append((label, tname, cases))
         room_things[room].append((tx, ty, w, h, spr_tile, label, tname))
     for room, lst in room_things.items():
         if sum(1 for t in lst if t[4] != 0xFF) > 8:
             raise ArtError(f"things.txt: more than 8 people in {room}")
+    for n, where in used_in_if.items():
+        if n.lower() not in set_somewhere:
+            raise ArtError(f"{where}: '{n}' is checked but no 'do' line ever sets it (typo?)")
+    if len(var_names) > 32:
+        raise ArtError(f"things.txt: {len(var_names)} names, the game keeps 32")
 
     # --- write gfx.asm
     GEN.mkdir(parents=True, exist_ok=True)
@@ -295,7 +386,11 @@ def main():
     (GEN / "rooms.asm").write_text("\n".join(out), encoding="utf-8", newline="\n")
     # --- write things.asm
     out = ["; Generated by tools/gfx.py from art/things.txt - edit the art, not this file", "",
-           f"DEF THING_SIZE EQU {THING_SIZE}", f"DEF BOX_W EQU {BOX_W}", f"DEF PAGE_LEN EQU {BOX_W * 2}", "",
+           f"DEF THING_SIZE EQU {THING_SIZE}", f"DEF BOX_W EQU {BOX_W}", f"DEF PAGE_LEN EQU {BOX_W * 2}",
+           f"DEF VAR_COUNT EQU {len(var_names)}",
+           "DEF OP_STOP EQU 0", "DEF OP_PAGE EQU 1", "DEF OP_SET EQU 2", "DEF OP_SHAKE EQU 3",
+           "DEF OP_BOOM EQU 4", "DEF OP_END EQU 5", "",
+           "; variables: " + ", ".join(f"{i} {n}" for i, n in enumerate(var_names)), "",
            'SECTION "Things", ROM0', "RoomThings::"]
     out += [f"    dw Things{i}" for i in range(len(names))]
     for i, name in enumerate(names):
@@ -304,16 +399,33 @@ def main():
         for tx, ty, w, h, spr_tile, label, tname in lst:
             out.append(f"    db {tx},{ty},{w},{h},${spr_tile:02X}")
             out.append(f"    dw {label}  ; {tname}")
-    for label, tname, pages in talks:
-        out += ["", f"{label}:  ; {tname}", f"    db {len(pages)}"]
-        for a, b2 in pages:
-            for ln in (a, b2):
-                out.append("    db " + ",".join(str(text_map[c]) for c in ln) + f"  ; {ln.rstrip()}")
+    for label, tname, cases in talks:
+        out += ["", f"{label}:  ; {tname}", f"    db {len(cases)}  ; cases"]
+        for k, (conds, ops) in enumerate(cases):
+            desc = " ".join(f"{var_names[v]}{'!=' if op else '='}{val}" for v, op, val in conds) or "otherwise"
+            out.append(f"    db {len(conds)}" + "".join(f", {v},{op},{val}" for v, op, val in conds) + f"  ; {desc}")
+            out.append(f"    dw {label}_{k}")
+        for k, (conds, ops) in enumerate(cases):
+            out.append(f"{label}_{k}:")
+            for op in ops:
+                if op[0] == "page":
+                    out.append("    db OP_PAGE")
+                    for ln in op[1]:
+                        out.append("    db " + ",".join(str(text_map[c]) for c in ln) + f"  ; {ln.rstrip()}")
+                elif op[0] == "set":
+                    out.append(f"    db OP_SET, {op[1]}, {op[2]}  ; {op[3]}")
+                elif op[0] == "shake":
+                    out.append(f"    db OP_SHAKE, {op[1]}, {op[2]}")
+                elif op[0] == "boom":
+                    out.append("    db OP_BOOM")
+                elif op[0] == "end":
+                    out.append("    db OP_END")
+            out.append("    db OP_STOP")
     out.append("")
     (GEN / "things.asm").write_text("\n".join(out), encoding="utf-8", newline="\n")
 
     print(f"gfx: {len(tiles)} tiles ({consts['BG_TILES']} background, solid from {consts['FIRST_SOLID']}), "
-          f"{len(names)} rooms, {len(talks)} things")
+          f"{len(names)} rooms, {len(talks)} things, {len(var_names)} names")
 
 
 if __name__ == "__main__":

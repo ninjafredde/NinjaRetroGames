@@ -1,0 +1,33 @@
+; Items John can carry: an 8x8 icon each, shown on the HUD while he has it.
+;   . = white  1 = light grey  2 = dark grey  3 = black
+; In things.txt:  "do give BEANS" / "do take BEANS"  and  "if beans" / "if !beans"
+
+@item BEANS
+.333....
+32223...
+32323...
+.333333.
+...32223
+...32323
+...32223
+....333.
+
+@item WRENCH
+.....3.3
+....32.3
+....3223
+...3233.
+..323...
+.323....
+323.....
+33......
+
+@item FUSE
+..3333..
+.322223.
+..3..3..
+..3.13..
+..3..3..
+..3.13..
+.322223.
+..3333..

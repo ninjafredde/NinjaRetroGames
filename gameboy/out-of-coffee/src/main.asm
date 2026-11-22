@@ -1,11 +1,14 @@
 ; OUT OF COFFEE - a Waste of Space adventure for the Game Boy
 ; Step 1: walk John around the ship, room by room.
 ; Step 2: the crew, and text boxes (face someone, press A).
+; Step 3: story state, items, the machine's rule of three, the end.
 
 INCLUDE "hw.inc"
 INCLUDE "gen/gfx.asm"
 INCLUDE "gen/rooms.asm"
 INCLUDE "gen/things.asm"
+
+ASSERT VAR_COUNT <= 32
 
 DEF START_ROOM EQU ROOM_CORRIDOR
 
@@ -152,6 +155,7 @@ MainLoop:
     ldh [hVBlank], a
 
     call ReadPad
+    call Effects
     ld a, [wTalking]
     and a
     jr nz, .talking
@@ -293,7 +297,7 @@ LoadRoom:
     dec b
     jr nz, .row
 
-    call DrawHudName
+    call DrawHud
     call SetupThings
 
     ld a, LCDC_GAME
@@ -338,27 +342,45 @@ RoomCell:
     pop bc
     ret
 
-; DrawHudName: HUD row 2 = the room's name, centred. Safe with the LCD on.
-DrawHudName:
+; DrawHud: HUD row 2 = room name on the left, items John carries on the right.
+; Safe with the LCD on.
+DrawHud:
     ld hl, $9C20
     ld b, 20
     ld a, TILE_SPACE
     call VramFill
-    ld a, [wNameLen]
-    ld b, a
-    ld a, 20
-    sub b
-    srl a
-    add LOW($9C20)
-    ld l, a
-    ld h, HIGH($9C20)
+    ld hl, $9C21
     ld a, [wNamePtr]
     ld e, a
     ld a, [wNamePtr + 1]
     ld d, a
     ld a, [wNameLen]
     ld b, a
-    jp VramCopy
+    call VramCopy
+    ld hl, $9C20 + 18       ; icons from the right
+    ld c, 0
+.item:
+    ld a, c
+    cp ITEM_COUNT
+    ret z
+    push hl
+    ld hl, wVars
+    ld e, c
+    ld d, 0
+    add hl, de
+    ld a, [hl]
+    pop hl
+    and a
+    jr z, .next
+    ld a, c
+    add ITEM_ICON_BASE
+    ld b, 1
+    call VramFill
+    dec hl
+    dec hl
+.next:
+    inc c
+    jr .item
 
 
 ; ---------------------------------------------------------------- things
@@ -574,6 +596,8 @@ CheckTalk:
     ld l, a
     pop bc                  ; (saved hl)
     pop bc
+    call PickCase
+    ret c
     jp StartTalk
 .miss:
     pop hl
@@ -586,14 +610,72 @@ CheckTalk:
 
 
 ; ---------------------------------------------------------------- text box
-; StartTalk: hl = talk data (page count, then pages of 2 x BOX_W tiles)
-StartTalk:
+; PickCase: hl = a thing's talk data. The first case whose conditions all
+; hold wins. Out: hl = its script, carry clear; carry set if none holds.
+PickCase:
     ld a, [hli]
-    ld [wPagesLeft], a
+    and a
+    jr z, .none
+    ld b, a                 ; cases left
+.case:
+    ld a, [hli]
+    ld c, a                 ; conditions in this case
+    ld a, 1
+    ld [wCaseOk], a
+.cond:
+    ld a, c
+    and a
+    jr z, .condsDone
+    dec c
+    ld a, [hli]             ; variable
+    push hl
+    ld e, a
+    ld d, 0
+    ld hl, wVars
+    add hl, de
+    ld e, [hl]              ; e = its value
+    pop hl
+    ld a, [hli]             ; 0: must equal, 1: must not equal
+    ld d, a
+    ld a, [hli]
+    cp e
+    jr z, .equal
+    ld a, d
+    and a
+    jr nz, .cond
+    jr .fail
+.equal:
+    ld a, d
+    and a
+    jr z, .cond
+.fail:
+    xor a
+    ld [wCaseOk], a
+    jr .cond
+.condsDone:
+    ld a, [wCaseOk]
+    and a
+    jr nz, .found
+    inc hl                  ; skip the script pointer
+    inc hl
+    dec b
+    jr nz, .case
+.none:
+    scf
+    ret
+.found:
+    ld a, [hli]
+    ld h, [hl]
+    ld l, a
+    and a
+    ret
+
+; StartTalk: hl = script. Opens the text box; NextPage runs once it is up.
+StartTalk:
     ld a, l
-    ld [wPagePtr], a
+    ld [wScriptPtr], a
     ld a, h
-    ld [wPagePtr + 1], a
+    ld [wScriptPtr + 1], a
     ld a, 1
     ld [wTalking], a
     xor a
@@ -603,6 +685,75 @@ StartTalk:
     ld a, HIDE_WY
     ldh [hWY], a
     jp ClearBox
+
+; NextPage: run the script up to its next page of text (doing any effects on
+; the way) and start typing it, or close the box at the end.
+NextPage:
+    ld a, [wScriptPtr]
+    ld l, a
+    ld a, [wScriptPtr + 1]
+    ld h, a
+.op:
+    ld a, [hli]
+    cp OP_PAGE
+    jr z, .page
+    cp OP_SET
+    jr z, .set
+    cp OP_SHAKE
+    jr z, .shake
+    cp OP_BOOM
+    jr z, .boom
+    cp OP_END
+    jr z, .end
+    ld a, PHASE_CLOSE       ; OP_STOP
+    ld [wPhase], a
+    ret
+.set:
+    ld a, [hli]
+    ld e, a
+    ld d, 0
+    ld a, [hli]
+    push hl
+    ld hl, wVars
+    add hl, de
+    ld [hl], a
+    pop hl
+    jr .op
+.shake:
+    ld a, [hli]
+    ld [wShake], a
+    ld a, [hli]
+    ld [wShakeAmp], a
+    jr .op
+.boom:
+    ld a, 16
+    ld [wFlash], a
+    ld a, 90
+    ld [wShake], a
+    ld a, 3
+    ld [wShakeAmp], a
+    jr .op
+.end:
+    ld a, 1
+    ld [wEnding], a
+    jr .op
+.page:
+    ld a, l
+    ld [wPagePtr], a
+    ld a, h
+    ld [wPagePtr + 1], a
+    ld de, PAGE_LEN
+    add hl, de
+    ld a, l
+    ld [wScriptPtr], a
+    ld a, h
+    ld [wScriptPtr + 1], a
+    call ClearBox
+    ld a, PHASE_TYPE
+    ld [wPhase], a
+    xor a
+    ld [wTypePos], a
+    ret
 
 ; ClearBox: window rows 1-4 to spaces (row 0 is the line on top)
 ClearBox:
@@ -635,23 +786,22 @@ UpdateTalk:
     ldh [hWY], a
     cp HIDE_WY
     ret c
-    call DrawHudName
+    call DrawHud
     ld a, HUD_WY
     ldh [hWY], a
     xor a
     ld [wTalking], a
-    ret
+    ld a, [wEnding]
+    and a
+    ret z
+    jp ShowEnd
 .open:                      ; slide up
     ldh a, [hWY]
     sub 4
     ldh [hWY], a
     cp BOX_WY
     ret nz
-    ld a, PHASE_TYPE
-    ld [wPhase], a
-    xor a
-    ld [wTypePos], a
-    ret
+    jp NextPage
 .type:                      ; one letter a frame; A shows the rest at once
     ldh a, [hNew]
     bit PADB_A, a
@@ -681,25 +831,7 @@ UpdateTalk:
     ldh a, [hNew]
     bit PADB_A, a
     ret z
-    ld hl, wPagesLeft
-    dec [hl]
-    jr z, .close
-    ld a, [wPagePtr]        ; next page
-    add PAGE_LEN
-    ld [wPagePtr], a
-    ld a, [wPagePtr + 1]
-    adc 0
-    ld [wPagePtr + 1], a
-    call ClearBox
-    ld a, PHASE_TYPE
-    ld [wPhase], a
-    xor a
-    ld [wTypePos], a
-    ret
-.close:
-    ld a, PHASE_CLOSE
-    ld [wPhase], a
-    ret
+    jp NextPage
 
 ; TypeOne: put the next letter of the page in the box
 TypeOne:
@@ -1024,6 +1156,82 @@ DrawJohn:
     ret
 
 
+; ---------------------------------------------------------------- effects
+; Effects: every frame - the white flash of an explosion, and screen shake
+; (the room shakes sideways; the HUD and text box stay put).
+Effects:
+    ld a, [wFlash]
+    and a
+    jr z, .palette
+    dec a
+    ld [wFlash], a
+.palette:
+    and a
+    ld a, %11100100
+    jr z, .setPal
+    xor a                   ; all white
+.setPal:
+    ldh [rBGP], a
+    ld a, [wShake]
+    and a
+    jr z, .still
+    dec a
+    ld [wShake], a
+    and 2
+    ld a, [wShakeAmp]
+    jr z, .setX
+    cpl
+    inc a
+.setX:
+    ldh [rSCX], a
+    ret
+.still:
+    xor a
+    ldh [rSCX], a
+    ret
+
+; ShowEnd: the end screen; the game stops here.
+ShowEnd:
+.waitVB:
+    ldh a, [rLY]
+    cp 144
+    jr c, .waitVB
+    xor a
+    ldh [rLCDC], a
+    ldh [rSCX], a
+    ldh [rSCY], a
+    ld hl, wShadowOAM
+    ld bc, 160
+    xor a
+    call Memset
+    ld hl, $9800
+    ld bc, 32 * 18
+    ld a, TILE_SPACE
+    call Memset
+    ld hl, EndLine1
+    ld de, $9800 + 32 * 7 + (20 - (EndLine1End - EndLine1)) / 2
+    ld bc, EndLine1End - EndLine1
+    call Memcpy
+    ld hl, EndLine2
+    ld de, $9800 + 32 * 10 + (20 - (EndLine2End - EndLine2)) / 2
+    ld bc, EndLine2End - EndLine2
+    call Memcpy
+    ld a, %11100100
+    ldh [rBGP], a
+    ld a, %10010001         ; LCD on, $8000 tiles, BG only
+    ldh [rLCDC], a
+.forever:
+    halt
+    jr .forever
+
+SETCHARMAP text
+EndLine1: db "OUT OF COFFEE"
+EndLine1End:
+EndLine2: db "THE END"
+EndLine2End:
+SETCHARMAP main
+
+
 ; ---------------------------------------------------------------- helpers
 ; VramFill: hl = dest, b = count, a = value. Waits for VRAM each byte (LCD on is fine).
 VramFill:
@@ -1115,10 +1323,16 @@ wTH:      ds 1
 wTSpr:    ds 1
 wTalking: ds 1
 wPhase:   ds 1
-wPagesLeft: ds 1
 wPagePtr: ds 2
 wTypePos: ds 1
 wBlink:   ds 1
+wVars:    ds 32             ; story state: items first, then names from things.txt
+wScriptPtr: ds 2
+wCaseOk:  ds 1
+wShake:   ds 1
+wShakeAmp: ds 1
+wFlash:   ds 1
+wEnding:  ds 1
 
 SECTION "HRAM vars", HRAM
 hKeys:   ds 1
