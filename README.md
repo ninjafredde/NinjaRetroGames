@@ -14,6 +14,8 @@ mothership *Dilettante* and its crew.
 
 ## Games
 
+<a href="c64/pain-in-the-asteroids/"><img src="c64/pain-in-the-asteroids/screenshots/1-title.png" width="24%" alt="A Pain in the Asteroids"></a> <a href="c64/derelict/"><img src="c64/derelict/screenshots/1-title.png" width="24%" alt="Derelict"></a> <a href="c64/mushroom/"><img src="c64/mushroom/screenshots/1-title.png" width="24%" alt="Mushroom for Improvement"></a> <a href="gameboy/out-of-coffee/"><img src="gameboy/out-of-coffee/screenshots/1-title.png" width="24%" alt="Out of Coffee"></a>
+
 | Game | Machine | Language | What it is |
 |---|---|---|---|
 | [A Pain in the Asteroids](c64/pain-in-the-asteroids/) | Commodore 64 | 6502, KickAssembler | Top-down scrolling shooter: launch from the mothership, clear the rocks, dock again |

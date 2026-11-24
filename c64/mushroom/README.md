@@ -1,4 +1,7 @@
 # Mushroom for Improvement
+
+<img src="screenshots/1-title.png" width="32%" alt="Mushroom for Improvement: title"> <img src="screenshots/2-bridge.png" width="32%" alt="Mushroom for Improvement: bridge"> <img src="screenshots/3-crew-quarters.png" width="32%" alt="Mushroom for Improvement: crew quarters">
+
 A Waste of Space game for the C64. 6502 assembly (KickAssembler), joystick in port 2.
 
 Something is growing aboard the mothership Dilettante. Lt John Johnson clears it

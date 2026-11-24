@@ -1,5 +1,8 @@
 # Out of Coffee
 
+<img src="screenshots/1-title.png" width="32%" alt="Out of Coffee: title"> <img src="screenshots/2-hydroponics.png" width="32%" alt="Out of Coffee: hydroponics"> <img src="screenshots/3-shake.png" width="32%" alt="Out of Coffee: shake">
+
+
 A Waste of Space adventure for the original Game Boy (4 shades), in SM83 assembly.
 
 - Double-click `run.bat` to build and play in SameBoy. `build.bat` only builds `build\coffee.gb`.

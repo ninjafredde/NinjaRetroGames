@@ -1,4 +1,7 @@
 # A Pain in the Asteroids
+
+<img src="screenshots/1-title.png" width="32%" alt="A Pain in the Asteroids: title"> <img src="screenshots/2-launch.png" width="32%" alt="A Pain in the Asteroids: launch"> <img src="screenshots/3-rocks.png" width="32%" alt="A Pain in the Asteroids: rocks">
+
 6502 assembly (KickAssembler). Joystick in port 2: move, fire.
 Each level: launch from the mothership, shoot the rocks, dock in its back.
 Big rocks (10 points) split into two small ones (20 points) that fly diagonally

@@ -1,4 +1,7 @@
 # Derelict
+
+<img src="screenshots/1-title.png" width="32%" alt="Derelict: title"> <img src="screenshots/2-spore-bug.png" width="32%" alt="Derelict: spore bug"> <img src="screenshots/3-exploring.png" width="32%" alt="Derelict: exploring">
+
 A Waste of Space first-person dungeon crawl for the C64. 6502 assembly (KickAssembler),
 joystick in port 2 or the keyboard.
 
