@@ -1,0 +1,5 @@
+tools/rgbds/
+tools/sameboy/
+build/
+src/gen/
+__pycache__/
