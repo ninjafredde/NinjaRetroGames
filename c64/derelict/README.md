@@ -48,7 +48,7 @@ joystick in port 2 or the keyboard.
 - `src/main.asm`: `COL_FLOOR`, `COL_CEIL`, frame and text colours at the top.
 
 ## Build
-`build.bat` (build + run in VICE), `build.bat norun`. Uses the tools in `..\c64\tools`.
+`build.bat` (build + run in VICE), `build.bat norun`. Uses the tools in `..\tools` (KickAssembler, VICE; see the main README).
 Test builds: `-define DEMO` walks a scripted route by itself; `-define FIGHTTEST` = a fight every step;
 `-define NOFIGHTS`; `-define DECK2` starts on deck 2.
 

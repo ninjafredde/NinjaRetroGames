@@ -1,0 +1,17 @@
+# Toolchains: downloaded, not committed (see README)
+c64/tools/KickAssembler/
+c64/tools/GTK3VICE-*/
+gameboy/tools/rgbds/
+gameboy/tools/sameboy/
+
+# Build output: built disks/ROMs go to GitHub Releases
+build/
+releases/
+**/src/gen/
+*.sym
+*.map
+*.o
+
+# Scratch
+__pycache__/
+**/art/test/

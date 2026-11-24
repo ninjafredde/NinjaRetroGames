@@ -1,0 +1,20 @@
+GIMP Palette
+Name: C64 (colodore)
+Columns: 4
+#
+  0   0   0	black
+255 255 255	white
+129  51  56	red
+117 206 200	cyan
+142  60 151	purple
+ 86 172  77	green
+ 46  44 155	blue
+237 241 113	yellow
+142  80  41	orange
+ 85  56   0	brown
+196 108 113	light red
+ 74  74  74	dark grey
+123 123 123	grey
+169 255 159	light green
+112 109 235	light blue
+178 178 178	light grey

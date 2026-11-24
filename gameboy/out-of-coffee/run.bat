@@ -8,4 +8,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-start "" /d "%~dp0tools\sameboy" "%~dp0tools\sameboy\sameboy.exe" "%~dp0build\coffee.gb"
+start "" /d "%~dp0..\tools\sameboy" "%~dp0..\tools\sameboy\sameboy.exe" "%~dp0build\coffee.gb"

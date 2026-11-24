@@ -472,7 +472,7 @@ def convert_ui():
 # art/title.png: the whole screen (320 x 200), shown until fire. The program writes
 # PRESS FIRE on row 22 itself (it blinks), so keep cells 15-24 of that row black.
 TW, TH = 160, 200
-CHARGEN = os.path.join(ROOT, '..', 'c64', 'tools', 'GTK3VICE-3.10-win64', 'C64', 'chargen-901225-01.bin')
+CHARGEN = os.path.join(ROOT, '..', 'tools', 'GTK3VICE-3.10-win64', 'C64', 'chargen-901225-01.bin')
 
 def text_pixels(s, x0, y0, sx, sy, gap=0):
     """the ROM letters of s, each font pixel sx x sy C64 pixels -> {(x, y): row in the letter}"""

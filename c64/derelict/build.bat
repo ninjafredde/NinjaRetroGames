@@ -2,10 +2,10 @@
 rem Build Derelict, make a disk image, and run it in VICE.
 rem   build.bat        build + run
 rem   build.bat norun  build only
-rem Uses the tools in ..\c64\tools (KickAssembler, VICE).
+rem Uses the tools in ..\tools (KickAssembler, VICE).
 setlocal
 set ROOT=%~dp0
-set TOOLS=%ROOT%..\c64\tools
+set TOOLS=%ROOT%..\tools
 set VICE=%TOOLS%\GTK3VICE-3.10-win64\bin
 if not exist "%ROOT%build" mkdir "%ROOT%build"
 
