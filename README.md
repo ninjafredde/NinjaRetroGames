@@ -60,3 +60,7 @@ Then run `build.bat` in a game's folder. C64 games build and start in VICE
 
 Each game's README covers its own details: controls, how to edit sprites, maps
 and music, test builds, and how to run it on real hardware.
+
+## Licence
+
+[MIT](LICENSE): code, art and music. Use it, learn from it, build on it.
